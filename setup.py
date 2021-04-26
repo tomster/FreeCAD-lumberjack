@@ -1,14 +1,13 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
 
 setup(
-    name="freecad.asm3",
+    name="freecad.lumberjack",
     version="0.0.0dev",
     url="https://github.com/tomster/FreeCAD-lumberjack",
     description="Woodworking workbench for FreeCAD",
-    packages=find_packages("src"),
-    package_dir={"": "src"},
+    packages=["freecad", "freecad.lumberjack"],
     include_package_data=True,
-    install_requires=["freecad.asm3"],
+    # install_requires=["freecad.asm3"],
     namespace_packages=["freecad"],
 )
