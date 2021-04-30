@@ -104,7 +104,11 @@ def get_perpendicular_tuples(faces):
     return listeCouple
 
 
-def analyse_shape(shape, name=None):
+def dimensions_of_shape(shape, name=None):
+    """ returns the normalized width, length and height of the given shape
+    as a tuple of integers by creating a temporary body which is rotated
+    to be perpendicular to the XY plane and then measured.
+    """
     if name is None:
         name = "temp_shape"
     # taken from
@@ -151,10 +155,10 @@ def analyse_shape(shape, name=None):
     Draft.move([obj], FreeCAD.Vector(movex, movey, movez))
     FreeCAD.ActiveDocument.recompute()
     # Get the boundbox
-    analyse = (
+    dimensions = (
         int(obj.Shape.BoundBox.YLength),
         int(obj.Shape.BoundBox.ZLength),
         int(obj.Shape.BoundBox.XLength),
     )
     FreeCAD.ActiveDocument.removeObject(name)
-    return analyse
+    return dimensions
