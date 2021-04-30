@@ -1,9 +1,17 @@
+from importlib import reload as _reload
+import Draft
+import FreeCAD
+from FreeCAD import Vector, Rotation
+import math
+import DraftGeomUtils
+import DraftVecUtils
 import FreeCADGui as Gui
 import freecad.asm3 as asm3
 
 
 def reload():
     from freecad.lumberjack import cutlist as this
+
     _reload(this)
 
 
@@ -69,3 +77,82 @@ def main():
     parts = get_parts_for_selection()
     for part in parts:
         print("Got: %s" % part.Label)
+
+
+def getArea(face):
+    return face.Area
+
+
+def getFacesMax(faces):
+    faces = sorted(faces, key=getArea, reverse=True)
+    facesMax = faces[0:4]
+    return facesMax
+
+
+def getCoupleFacesEquerre(faces):
+    listeCouple = []
+    lenfaces = len(faces)
+    faces.append(faces[0])
+    for n in range(lenfaces):
+        norm2 = faces[n + 1].normalAt(0, 0)
+        norm1 = faces[n].normalAt(0, 0)
+        norm0 = faces[n - 1].normalAt(0, 0)
+        if abs(round(math.degrees(DraftVecUtils.angle(norm1, norm0)))) == 90.0:
+            listeCouple.append([faces[n], faces[n - 1]])
+        if abs(round(math.degrees(DraftVecUtils.angle(norm1, norm2)))) == 90.0:
+            listeCouple.append([faces[n], faces[n + 1]])
+    return listeCouple
+
+
+def analyse_shape(name, shape):
+    # taken from
+    # https://github.com/j-wiedemann/FreeCAD-Timber/blob/master/TimberListing.py
+    obj = FreeCAD.ActiveDocument.addObject("Part::Feature", name)
+    obj.Shape = shape
+    obj.Placement.Base = FreeCAD.Vector(0.0, 0.0, 0.0)
+    obj.Placement.Rotation = FreeCAD.Rotation(FreeCAD.Vector(0.0, 0.0, 1.0), 0.0)
+    FreeCAD.ActiveDocument.recompute()
+    # Get the face to align with XY plane
+    faces = obj.Shape.Faces
+    facesMax = getFacesMax(faces)
+    coupleEquerre = getCoupleFacesEquerre(facesMax)
+    # Get the normal of this face
+    nv1 = coupleEquerre[0][0].normalAt(0, 0)
+    # Get the goal normal vector
+    zv = Vector(0, 0, 1)
+    # Find and apply a rotation to the object to align face
+    pla = obj.Placement
+    rot = pla.Rotation
+    rot1 = Rotation(nv1, zv)
+    newrot = rot.multiply(rot1)
+    pla.Rotation = newrot
+    # Get the face to align with XY plane
+    faces = obj.Shape.Faces
+    facesMax = getFacesMax(faces)
+    coupleEquerre = getCoupleFacesEquerre(facesMax)
+    # Get the longest edge from aligned face
+    maxLength = 0.0
+    for e in coupleEquerre[0][0].Edges:
+        if e.Length > maxLength:
+            maxLength = e.Length
+            edgeMax = e
+    # Get the angle between edge and X axis and rotate object
+    vec = DraftGeomUtils.vec(edgeMax)
+    vecZ = FreeCAD.Vector(vec[0], vec[1], 0.0)
+    pos2 = obj.Placement.Base
+    rotZ = math.degrees(DraftVecUtils.angle(vecZ, FreeCAD.Vector(1.0, 0.0, 0.0), zv))
+    Draft.rotate([obj], rotZ, pos2, axis=zv, copy=False)
+    bb = obj.Shape.BoundBox
+    movex = bb.XMin * -1
+    movey = bb.YMin * -1
+    movez = bb.ZMin * -1
+    Draft.move([obj], FreeCAD.Vector(movex, movey, movez))
+    FreeCAD.ActiveDocument.recompute()
+    # Get the boundbox
+    analyse = [
+        obj.Shape.BoundBox.YLength,
+        obj.Shape.BoundBox.ZLength,
+        obj.Shape.BoundBox.XLength,
+    ]
+    FreeCAD.ActiveDocument.removeObject(name)
+    return analyse
