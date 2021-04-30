@@ -2,6 +2,11 @@ import FreeCADGui as Gui
 import freecad.asm3 as asm3
 
 
+def reload():
+    from freecad.lumberjack import cutlist as this
+    _reload(this)
+
+
 def get_parts_from_assembly(asm):
     parts = []
     part_group = asm.getPartGroup()
