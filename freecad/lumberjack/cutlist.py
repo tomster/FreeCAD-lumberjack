@@ -79,17 +79,17 @@ def main():
         print("Got: %s" % part.Label)
 
 
-def getArea(face):
+def get_area(face):
     return face.Area
 
 
-def getFacesMax(faces):
-    faces = sorted(faces, key=getArea, reverse=True)
+def get_faces_max(faces):
+    faces = sorted(faces, key=get_area, reverse=True)
     facesMax = faces[0:4]
     return facesMax
 
 
-def getCoupleFacesEquerre(faces):
+def get_perpendicular_tuples(faces):
     listeCouple = []
     lenfaces = len(faces)
     faces.append(faces[0])
@@ -104,7 +104,9 @@ def getCoupleFacesEquerre(faces):
     return listeCouple
 
 
-def analyse_shape(name, shape):
+def analyse_shape(shape, name=None):
+    if name is None:
+        name = "temp_shape"
     # taken from
     # https://github.com/j-wiedemann/FreeCAD-Timber/blob/master/TimberListing.py
     obj = FreeCAD.ActiveDocument.addObject("Part::Feature", name)
@@ -114,10 +116,10 @@ def analyse_shape(name, shape):
     FreeCAD.ActiveDocument.recompute()
     # Get the face to align with XY plane
     faces = obj.Shape.Faces
-    facesMax = getFacesMax(faces)
-    coupleEquerre = getCoupleFacesEquerre(facesMax)
+    facesMax = get_faces_max(obj.Shape.Faces)
+    perpendicular_tuples = get_perpendicular_tuples(facesMax)
     # Get the normal of this face
-    nv1 = coupleEquerre[0][0].normalAt(0, 0)
+    nv1 = perpendicular_tuples[0][0].normalAt(0, 0)
     # Get the goal normal vector
     zv = Vector(0, 0, 1)
     # Find and apply a rotation to the object to align face
@@ -128,11 +130,11 @@ def analyse_shape(name, shape):
     pla.Rotation = newrot
     # Get the face to align with XY plane
     faces = obj.Shape.Faces
-    facesMax = getFacesMax(faces)
-    coupleEquerre = getCoupleFacesEquerre(facesMax)
+    facesMax = get_faces_max(faces)
+    perpendicular_tuples = get_perpendicular_tuples(facesMax)
     # Get the longest edge from aligned face
     maxLength = 0.0
-    for e in coupleEquerre[0][0].Edges:
+    for e in perpendicular_tuples[0][0].Edges:
         if e.Length > maxLength:
             maxLength = e.Length
             edgeMax = e
