@@ -34,10 +34,7 @@ def get_part(obj):
         for item in get_parts_from_link(obj):
             parts.extend(get_part(item))
     else:
-        if obj.Visibility:
-            parts.append(obj)
-        else:
-            print("Skipping invisible %s" % obj.Label)
+        parts.append(obj)
     return parts
 
 
