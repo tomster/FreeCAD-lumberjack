@@ -75,17 +75,24 @@ def get_perpendicular_tuples(faces):
     return listeCouple
 
 
-def dimensions_of_shape(shape, name=None):
-    """ returns the normalized width, length and height of the given shape
+def dimensions_of_obj(original, name=None):
+    """returns the normalized width, length and height of the given shape
     as a tuple of integers by creating a temporary body which is rotated
     to be perpendicular to the XY plane and then measured.
     """
+    if original.isDerivedFrom("Part::Primitive"):
+        return (
+            int(original.Width),
+            int(original.Length),
+            int(original.Height),
+        )
     if name is None:
         name = "temp_shape"
+
     # taken from
     # https://github.com/j-wiedemann/FreeCAD-Timber/blob/master/TimberListing.py
     obj = FreeCAD.ActiveDocument.addObject("Part::Feature", name)
-    obj.Shape = shape
+    obj.Shape = original.Shape
     obj.Placement.Base = FreeCAD.Vector(0.0, 0.0, 0.0)
     obj.Placement.Rotation = FreeCAD.Rotation(FreeCAD.Vector(0.0, 0.0, 1.0), 0.0)
     FreeCAD.ActiveDocument.recompute()
