@@ -151,10 +151,10 @@ def analyse_shape(shape, name=None):
     Draft.move([obj], FreeCAD.Vector(movex, movey, movez))
     FreeCAD.ActiveDocument.recompute()
     # Get the boundbox
-    analyse = [
-        obj.Shape.BoundBox.YLength,
-        obj.Shape.BoundBox.ZLength,
-        obj.Shape.BoundBox.XLength,
-    ]
+    analyse = (
+        int(obj.Shape.BoundBox.YLength),
+        int(obj.Shape.BoundBox.ZLength),
+        int(obj.Shape.BoundBox.XLength),
+    )
     FreeCAD.ActiveDocument.removeObject(name)
     return analyse
