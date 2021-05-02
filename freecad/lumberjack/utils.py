@@ -82,9 +82,9 @@ def dimensions_of_obj(original, name=None):
     """
     if original.isDerivedFrom("Part::Primitive"):
         return (
-            int(original.Width),
-            int(original.Length),
-            int(original.Height),
+            int(original.Width + 0.5),
+            int(original.Length + 0.5),
+            int(original.Height + 0.5),
         )
     if name is None:
         name = "temp_shape"
@@ -134,9 +134,9 @@ def dimensions_of_obj(original, name=None):
     FreeCAD.ActiveDocument.recompute()
     # Get the boundbox
     dimensions = (
-        int(obj.Shape.BoundBox.YLength),
-        int(obj.Shape.BoundBox.ZLength),
-        int(obj.Shape.BoundBox.XLength),
+        int(obj.Shape.BoundBox.YLength + 0.5),
+        int(obj.Shape.BoundBox.ZLength + 0.5),
+        int(obj.Shape.BoundBox.XLength + 0.5),
     )
     FreeCAD.ActiveDocument.removeObject(name)
     return dimensions
