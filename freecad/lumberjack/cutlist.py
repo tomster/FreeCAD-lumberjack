@@ -55,4 +55,4 @@ class CutList:
             self.parts.extend(utils.get_part(item))
             names.append(item.Label)
 
-        self.name = "%sCutlist" % "-".join(names)
+        self.name = "%sCutlist" % "".join(["%s-" % name for name in names])
