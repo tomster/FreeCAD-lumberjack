@@ -43,3 +43,16 @@ def print_cutlist_csv(dimensions):
                 part.Label,
             )
         )
+
+class CutList:
+
+    def __init__(self, items):
+
+        self.parts = []
+        names = []
+
+        for item in items:
+            self.parts.extend(utils.get_part(item))
+            names.append(item.Label)
+
+        self.name = "%sCutlist" % "-".join(names)
