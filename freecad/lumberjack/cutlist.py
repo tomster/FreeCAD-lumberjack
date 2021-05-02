@@ -35,7 +35,7 @@ def print_cutlist_csv(dimensions):
     print("""Length,Width,Qty,Material,Label,Enabled""")
     for part, dimension in dimensions:
         print(
-            "%d, %d, 1, %d, %s, true"
+            "%d, %d, 1, %d,%s, true"
             % (
                 dimension[0],
                 dimension[1],
