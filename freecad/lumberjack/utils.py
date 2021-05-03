@@ -9,7 +9,7 @@ import DraftVecUtils
 
 def get_parts_from_assembly(asm):
     parts = []
-    part_group = asm.getPartGroup()
+    part_group = asm.Proxy.getPartGroup()
     for child in part_group.LinkedChildren:
         parts.append(child)
     return parts
@@ -25,16 +25,21 @@ def get_parts_from_link(link):
     return parts
 
 
-def get_part_recursive(obj):
+def get_part_recursive(obj, name=None):
     parts = []
     if is_assembly(obj):
-        for item in get_parts_from_assembly(obj.Proxy):
-            parts.extend(get_part_recursive(item))
+        for item in get_parts_from_assembly(obj):
+            parts.extend(get_part_recursive(item, name=obj.Label))
     elif obj.isDerivedFrom("App::Link"):
         for item in get_parts_from_link(obj):
-            parts.extend(get_part_recursive(item))
+            parts.extend(get_part_recursive(item, name=item.Label))
     else:
-        parts.append(obj)
+        if name is None:
+            name = obj.Label
+        elif name not in obj.Label:
+            name = '%s_%s' % (obj.Label, name)
+
+        parts.append((obj, name))
     return parts
 
 

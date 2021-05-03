@@ -21,27 +21,27 @@ class CutList:
         names = []
 
         for item in items:
-            self.parts.extend(utils.get_part(item))
+            self.parts.extend(utils.get_part_recursive(item))
             names.append(item.Label)
 
         self.name = "%sCutlist" % "".join(["%s-" % name for name in names])
 
     def get_dimensions(self):
         return [
-            (obj, sorted(utils.dimensions_of_obj(obj), reverse=True))
-            for obj in self.parts
+            (name, sorted(utils.dimensions_of_obj(obj), reverse=True))
+            for obj, name in self.parts
         ]
 
     def print_cutlist_csv(self):
         print("""Length,Width,Qty,Material,Label,Enabled""")
-        for part, dimension in self.get_dimensions():
+        for name, dimension in self.get_dimensions():
             print(
                 "%d, %d, 1, %d,%s, true"
                 % (
                     dimension[0],
                     dimension[1],
                     dimension[2],
-                    part.Label,
+                    name,
                 )
             )
 
