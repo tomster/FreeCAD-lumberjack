@@ -25,14 +25,14 @@ def get_parts_from_link(link):
     return parts
 
 
-def get_part(obj):
+def get_part_recursive(obj):
     parts = []
     if is_assembly(obj):
         for item in get_parts_from_assembly(obj.Proxy):
-            parts.extend(get_part(item))
+            parts.extend(get_part_recursive(item))
     elif obj.isDerivedFrom("App::Link"):
         for item in get_parts_from_link(obj):
-            parts.extend(get_part(item))
+            parts.extend(get_part_recursive(item))
     else:
         parts.append(obj)
     return parts
