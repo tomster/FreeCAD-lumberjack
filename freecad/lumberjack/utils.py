@@ -17,7 +17,7 @@ def get_parts_from_assembly(asm):
 
 def get_parts_from_link(link):
     parts = []
-    if link.ElementCount > 0:
+    if hasattr(link, "ElementCount") and link.ElementCount > 0:
         for element in link.ElementList:
             parts.append(element.LinkedObject)
     else:
@@ -30,7 +30,7 @@ def get_part_recursive(obj, name=None):
     if is_assembly(obj):
         for item in get_parts_from_assembly(obj):
             parts.extend(get_part_recursive(item, name=obj.Label))
-    elif obj.isDerivedFrom("App::Link"):
+    elif obj.isDerivedFrom("App::Link") or obj.isDerivedFrom("App::LinkElement"):
         for item in get_parts_from_link(obj):
             parts.extend(get_part_recursive(item, name=item.Label))
     else:
