@@ -37,8 +37,7 @@ def get_part_recursive(obj, name=None):
         if name is None:
             name = obj.Label
         elif name not in obj.Label:
-            name = '%s_%s' % (obj.Label, name)
-
+            name = "%s_%s" % (obj.Label, name)
         parts.append((obj, name))
     return parts
 
