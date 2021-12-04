@@ -37,7 +37,7 @@ class CutList:
     def _cutlist_csv(self):
         yield """Length,Width,Qty,Material,Label,Enabled"""
         for name, dimension in self.get_dimensions():
-            yield "%d, %d, 1, %d,%s, true" % (
+            yield "%d,%d,1,%d,%s,true" % (
                 dimension[0],
                 dimension[1],
                 dimension[2],
