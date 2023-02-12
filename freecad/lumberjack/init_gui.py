@@ -1,4 +1,5 @@
 import FreeCADGui
+from freecad.lumberjack import panels
 
 
 class LumberjackWorkbench(FreeCADGui.Workbench):
@@ -32,5 +33,7 @@ static char * infologo_xpm[] = {
     def GetClassName(self):
         return "Gui::PythonWorkbench"
 
+
+FreeCADGui.addCommand("Create Panel", panels._CommandMakePanel())
 
 FreeCADGui.addWorkbench(LumberjackWorkbench())
