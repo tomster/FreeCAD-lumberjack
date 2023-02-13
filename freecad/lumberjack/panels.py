@@ -64,6 +64,13 @@ class PanelFactory:
         PartTemplate(obj)
         self.template.ViewObject.Proxy = 0
 
+    def _ensure_settings_sheet(self):
+        """ensure a Spreadsheet for settings exists"""
+        if App.ActiveDocument.getObject(settings_name) is None:
+            self.settings_sheet = FreeCAD.ActiveDocument.addObject(
+                "Spreadsheet::Sheet", settings_name
+            )
+
     def create_part(self):
 
         try:
@@ -221,6 +228,7 @@ class PanelFactory:
         return dialog
 
     def __init__(self):
+        self._ensure_settings_sheet()
         self._make_template(recreate=False)
         self.dialog = self._make_dialog()
         self.dialog.show()
