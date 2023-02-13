@@ -174,16 +174,16 @@ class PanelFactory:
     def dimension_body(self):
         # width:
         self.sketch.setExpression(
-            ".Constraints[9]", self.template.ExpressionEngine[2][1]
+            ".Constraints[9]", self.template.getExpression("Width")[1]
         )
         # length:
         self.sketch.setExpression(
-            ".Constraints[10]", self.template.ExpressionEngine[1][1]
+            ".Constraints[10]", self.template.getExpression("Length")[1]
         )
         # height:
         pad = self.pad
         pad.Type = 0  # -> Length
-        pad.setExpression("Length", self.template.ExpressionEngine[0][1])
+        pad.setExpression("Length", self.template.getExpression("Height")[1])
         pad.Midplane = 1
 
     def close(self):
