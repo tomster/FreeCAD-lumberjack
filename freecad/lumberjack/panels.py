@@ -66,10 +66,32 @@ class PanelFactory:
 
     def _ensure_settings_sheet(self):
         """ensure a Spreadsheet for settings exists"""
-        if App.ActiveDocument.getObject(settings_name) is None:
-            self.settings_sheet = FreeCAD.ActiveDocument.addObject(
-                "Spreadsheet::Sheet", settings_name
-            )
+        if App.ActiveDocument.getObject(settings_name) is not None:
+            return
+        self.settings_sheet = sheet = FreeCAD.ActiveDocument.addObject(
+            "Spreadsheet::Sheet", settings_name
+        )
+        row = 1
+        sheet.insertRows(f'{row}', 1)
+        sheet.mergeCells(f'A{row}:ZZ{row}')
+        sheet.set(f'A{row}', 'Thicknesses')
+        sheet.setStyle(f'A{row}:ZZ{row}', 'bold', 'add')
+        row += 1
+        for index in range(row, row+5):
+            sheet.set(f"A{index}", f"d{index-1}")
+            sheet.setEditMode(f"A{index}", "AutoAlias")
+            row += 1
+        for section in range(1,7):
+            sheet.insertRows(f'{row}', 1)
+            sheet.mergeCells(f'A{row}:ZZ{row}')
+            sheet.set(f'A{row}', f'Section {section}')
+            sheet.setStyle(f'A{row}:ZZ{row}', 'bold', 'add')
+            row += 1
+            for index in range(row, row+5):
+                sheet.set(f"A{index}", f"{index-1}")
+                sheet.setEditMode(f"A{index}", "AutoAlias")
+                row += 1
+        App.ActiveDocument.recompute()
 
     def create_part(self):
 
