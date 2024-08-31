@@ -114,6 +114,7 @@ class PanelFactory:
         row += 1
         for index in range(row, row+5):
             sheet.set(f"A{index}", f"d{index-1}")
+            sheet.set(f"B{index}", f"{index-1}")
             sheet.setEditMode(f"A{index}", "AutoAlias")
             row += 1
         for section in range(1,7):
