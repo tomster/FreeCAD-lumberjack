@@ -282,8 +282,10 @@ class PanelFactory:
             layout.addWidget(label)
             widget = Gui.UiLoader().createWidget("Gui::QuantitySpinBox")
             widget.setProperty("unit", "mm")
+            widget.setProperty("rawValue", self.template.getPropertyByName(property))
             Gui.ExpressionBinding(widget).bind(self.template, property)
             layout.addWidget(widget)
+            widget.show()
 
         okbox = QtGui.QDialogButtonBox(dialog)
         okbox.setOrientation(QtCore.Qt.Horizontal)
