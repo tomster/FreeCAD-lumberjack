@@ -47,7 +47,11 @@ class PanelTemplate:
             # make sure we have an expression ready for the property
             # but don't overwrite existing values
             if obj.getExpression(property) is None:
-                obj.setExpression(property, "10 mm")
+                if property == 'Height':
+                    # initialise height to the first default height
+                    obj.setExpression(property, f"{settings_name}.d1")
+                else:
+                    obj.setExpression(property, "10 mm")
 
 
 class PanelFactory:
