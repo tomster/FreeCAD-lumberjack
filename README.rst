@@ -8,14 +8,6 @@ It has been written specifically for the Assembly3 Workbench and the socalled Li
 
 It currently offers (only) two features: creating basic parts, pre-wrapped in an assembly container and preliminary calculation of a cutlist.
 
-TODOs
------
-
-* consolidate setup.py and tox.ini into pyproject.toml (but still using setuptools for now)
-* GUI panel for cutlist
-* incorporate part maker macro
-* figure out how to register keyboard short cuts for commands
-* figure out Qt for python
 
 
 Future Features

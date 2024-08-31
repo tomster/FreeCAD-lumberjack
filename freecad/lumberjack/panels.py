@@ -1,5 +1,3 @@
-import freecad.fcscript.v_0_0_1 as fc
-from FreeCAD import Vector, Rotation, Placement, Console
 from PySide import QtCore, QtGui
 
 import os
@@ -15,23 +13,39 @@ import FreeCADGui
 import FreeCADGui as Gui
 import Part
 import Sketcher
-from PySide import QtCore, QtGui
 
 
-class PartTemplate:
+"""
+ * ensure factory exists
+ * create panel with default values or values from previous panel
+ * bind parameters to object in form
+ * on cancel, delete the object
+ * on submit select the panel
+ * optional: create link in current assembly
 
-    name = "PartFactory"
-    groupname = "Components"
-    properties = ["Width", "Length", "Height"]
+setup_document
+
+"""
+
+
+panel_properties = ["Width", "Length", "Height"]
+settings_name = "Settings"
+components_name = "Components"
+
+
+class PanelTemplate:
+
+    name = "PanelTemplate"
 
     def __init__(self, obj):
         obj.Proxy = self
-        for property in self.properties:
+        for property in panel_properties:
             try:
-                obj.addProperty("App::PropertyQuantity", property)
+                obj.addProperty("App::PropertyLength", property)
             except Exception:
                 pass
             # make sure we have an expression ready for the property
+            # but don't overwrite existing values
             if obj.getExpression(property) is None:
                 obj.setExpression(property, "10 mm")
 
@@ -43,25 +57,42 @@ class PanelFactory:
     body = None
     pad = None
     sketch = None
-    group = None
+    components = None
     template = None
 
+    def setup_document(self):
+        """
+        idempotent setup that ensures that the current document has everything
+        that the workbench needs, i.e. Components group, templates etc.
+        """
+
+        self._ensure_settings_sheet()
+        self._make_template(recreate=False)
+
     def _make_template(self, recreate=False):
+        """Creates the comoponents group and any templates inside it"""
         if recreate:
+            # remove any existing instance:
             try:
-                App.ActiveDocument.removeObject(PartTemplate.name)
-                App.ActiveDocument.removeObject(PartTemplate.groupname)
+                App.ActiveDocument.removeObject(PanelTemplate.name)
+                App.ActiveDocument.removeObject(components_name)
             except Exception:
                 pass
-        if App.ActiveDocument.getObject(PartTemplate.groupname) is None:
-            App.ActiveDocument.addObject("App::LinkGroup", PartTemplate.groupname)
-        self.group = group = App.ActiveDocument.getObject(PartTemplate.groupname)
-        self.template = obj = App.ActiveDocument.getObject(PartTemplate.name)
-        if App.ActiveDocument.getObject(PartTemplate.name) is None:
-            obj = App.ActiveDocument.addObject("App::FeaturePython", PartTemplate.name)
-            group.ViewObject.dropObject(obj)
-        self.template = obj = App.ActiveDocument.getObject(PartTemplate.name)
-        PartTemplate(obj)
+        # create components container (a link group)
+        if App.ActiveDocument.getObject(components_name) is None:
+            App.ActiveDocument.addObject("App::LinkGroup", components_name)
+        self.components = components = App.ActiveDocument.getObject(components_name)
+
+        # ensure panels template
+        if App.ActiveDocument.getObject(PanelTemplate.name) is None:
+            template = App.ActiveDocument.addObject(
+                "App::FeaturePython", PanelTemplate.name
+            )
+            # move the template inside the components container:
+            components.ViewObject.dropObject(template)
+        self.template = template = App.ActiveDocument.getObject(PanelTemplate.name)
+        # initialise the helper class with the actual object:
+        PanelTemplate(template)
         self.template.ViewObject.Proxy = 0
 
     def _ensure_settings_sheet(self):
@@ -99,8 +130,9 @@ class PanelFactory:
             # get inputs from dialog
             self.name = name = self.d_name.text()
             body = self._make_body(name)
-            self.group.ViewObject.dropObject(self._make_assembly(name, body))
-            self.dimension_body()
+            self.components.ViewObject.dropObject(self._make_assembly(name, body))
+            self._dimension_body()
+            self._finalize_assembly(name)
             App.ActiveDocument.recompute()
             Gui.SendMsgToActiveView("ViewFit")
 
@@ -112,7 +144,12 @@ class PanelFactory:
         self.assembly = assembly = asm3.assembly.Assembly.make(App.ActiveDocument, name)
         # add the part to the assembly:
         assembly.ViewObject.dropObject(part, None, "", [])
+        # copy the template attributes onto the new object:
+        for property in panel_properties:
+            self.assembly.addProperty("App::PropertyLength", property)
+        return assembly
 
+    def _finalize_assembly(self, name):
         # create named elements from each face:
         faces = [
             ("Face1", "rear"),
@@ -128,12 +165,12 @@ class PanelFactory:
             asm3.assembly.AsmElement.make(selection, "%s_%s" % (name, fname))
 
         Gui.Selection.clearSelection()
-        return assembly
 
     def _make_body(self, name):
         body_name = "%s_body" % name
         App.ActiveDocument.addObject("PartDesign::Body", body_name)
         self.body = body = App.ActiveDocument.getObject(body_name)
+
         sketch_name = "%s_sketch" % name
         body.newObjectAt(
             "Sketcher::SketchObject",
@@ -200,7 +237,8 @@ class PanelFactory:
         App.ActiveDocument.recompute()
         return self.body
 
-    def dimension_body(self):
+    def _dimension_body(self):
+        """ """
         # width:
         self.sketch.setExpression(
             ".Constraints[9]", self.template.getExpression("Width")[1]
@@ -214,6 +252,10 @@ class PanelFactory:
         pad.Type = 0  # -> Length
         pad.setExpression("Length", self.template.getExpression("Height")[1])
         pad.Midplane = 1
+
+    #
+    # GUI
+    #
 
     def close(self):
         self.dialog.hide()
@@ -230,7 +272,7 @@ class PanelFactory:
         self.d_name = d_name = QtGui.QLineEdit()
         layout.addWidget(d_name)
 
-        for property in PartTemplate.properties:
+        for property in panel_properties:
             label = QtGui.QLabel(property)
             layout.addWidget(label)
             widget = Gui.UiLoader().createWidget("Gui::QuantitySpinBox")
@@ -250,8 +292,7 @@ class PanelFactory:
         return dialog
 
     def __init__(self):
-        self._ensure_settings_sheet()
-        self._make_template(recreate=False)
+        self.setup_document()
         self.dialog = self._make_dialog()
         self.dialog.show()
         self.dialog.exec_()
