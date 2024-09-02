@@ -138,6 +138,7 @@ class PanelFactory:
             self.components.ViewObject.dropObject(self._make_assembly(name, body))
             self._dimension_body()
             self._finalize_assembly(name)
+            self._create_link()
             App.ActiveDocument.recompute()
             Gui.SendMsgToActiveView("ViewFit")
 
@@ -170,6 +171,13 @@ class PanelFactory:
             asm3.assembly.AsmElement.make(selection, "%s_%s" % (name, fname))
 
         Gui.Selection.clearSelection()
+
+    def _create_link(self):
+        link = App.ActiveDocument.addObject("App::Link", "Link")
+        link.setLink(self.assembly)
+        active_assembly = FreeCADGui.ActiveDocument.ActiveView.getActiveObject(asm3.assembly._asm3ActiveKey)
+        if active_assembly is not None:
+            active_assembly.ViewObject.dropObject(link)
 
     def _make_body(self, name):
         body_name = "%s_body" % name
