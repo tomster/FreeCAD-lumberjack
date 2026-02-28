@@ -9,42 +9,23 @@ aliases with parameter names.
 
 import FreeCAD
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-# Name of the spreadsheet to watch for alias sync
-SPREADSHEET_NAME = "p"
-
-# Column configuration (0-indexed)
-PARAM_COLUMN = 0  # Column A - parameter names
-
-
-# =============================================================================
-# OBSERVER MANAGEMENT
-# =============================================================================
-
-# Store observer on the FreeCAD module to avoid FreeCAD init namespace quirks
-# where module-level globals may not be resolvable later.
-_OBSERVER_ATTR = "_lumberjack_alias_sync_observer"
-
 
 def install_observer():
-    """Install the alias sync observer (idempotent).
+    """Install the alias sync observer (idempotent)."""
 
-    Make the observer independent of module globals by binding configuration
-    into the observer instance.
-    """
+    # Configuration - defined inside function to avoid scope issues
+    SPREADSHEET_NAME = "p"
+    PARAM_COLUMN = 0  # Column A - parameter names
+    OBSERVER_ATTR = "_lumberjack_alias_sync_observer"
+
+    # Check if already installed
     try:
-        if getattr(FreeCAD, _OBSERVER_ATTR, None) is not None:
+        if getattr(FreeCAD, OBSERVER_ATTR, None) is not None:
             return
     except Exception:
         pass
 
-    spreadsheet_name = SPREADSHEET_NAME
-    param_column = PARAM_COLUMN
-
-    class _ParameterAliasSyncObserver:
+    class ParameterAliasSyncObserver:
         """
         Document observer that automatically syncs spreadsheet aliases.
 
@@ -72,6 +53,7 @@ def install_observer():
             if not prop or len(prop) < 2:
                 return
 
+            # Parse cell address from property name (e.g., "A2", "B3")
             col_letter = ""
             row_str = ""
             for char in prop:
@@ -83,6 +65,7 @@ def install_observer():
             if not col_letter or not row_str:
                 return
 
+            # Convert column letter to index (A=0, B=1, etc.)
             col_index = 0
             for i, char in enumerate(reversed(col_letter.upper())):
                 col_index += (ord(char) - ord("A") + 1) * (26**i)
@@ -167,18 +150,16 @@ def install_observer():
                 return False
             return True
 
-    obs = _ParameterAliasSyncObserver(spreadsheet_name, param_column)
+    # Create and install the observer
+    obs = ParameterAliasSyncObserver(SPREADSHEET_NAME, PARAM_COLUMN)
     try:
         FreeCAD.addDocumentObserver(obs)
-        setattr(FreeCAD, _OBSERVER_ATTR, obs)
+        setattr(FreeCAD, OBSERVER_ATTR, obs)
         FreeCAD.Console.PrintMessage("Lumberjack: Alias sync observer installed\n")
     except Exception as e:
-        try:
-            FreeCAD.Console.PrintWarning(
-                "Lumberjack: Failed to install alias sync observer: {}\n".format(e)
-            )
-        except Exception:
-            pass
+        FreeCAD.Console.PrintWarning(
+            "Lumberjack: Failed to install alias sync observer: {}\n".format(e)
+        )
 
 
 # Install observer when this module loads
