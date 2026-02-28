@@ -27,6 +27,25 @@ def _lj_qm_msg(msg):
         pass
 
 
+def _lj_qm_debug_enabled():
+    """Return True if verbose QuickMenu debug logging is enabled."""
+    try:
+        p = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Lumberjack")
+        return bool(p.GetBool("QuickMenuDebug", False))
+    except Exception:
+        return False
+
+
+def _lj_qm_dbg(msg):
+    """Debug logging gated behind a preference flag."""
+    if not _lj_qm_debug_enabled():
+        return
+    try:
+        FreeCAD.Console.PrintMessage("Lumberjack QuickMenu DEBUG: " + str(msg) + "\n")
+    except Exception:
+        pass
+
+
 def _lj_qm_msg(msg):
     """Minimal logging helper."""
     try:
@@ -420,96 +439,49 @@ class QuickMenuCommand:
         return True
 
     def Activated(self):
-        # Local debug logger: FreeCAD can execute InitGui.py in a namespace where
-        # module-level symbols are not resolvable at command activation time.
-        try:
-            FreeCAD.Console.PrintMessage(
-                "Lumberjack QuickMenu DEBUG: QuickMenuCommand.Activated() called\n"
-            )
-        except Exception:
-            pass
+        # FreeCAD can execute InitGui.py in a non-standard namespace where module-level
+        # symbols are not resolvable at command activation time. Use a local no-op
+        # debug function to avoid NameError.
+        def _dbg(_msg):
+            return
+
+        _dbg("QuickMenuCommand.Activated() called")
 
         # Self-contained: do not rely on module-level symbols being resolvable later at
         # command execution time.
         try:
             from PySide2 import QtCore, QtGui, QtWidgets  # type: ignore
 
-            try:
-                FreeCAD.Console.PrintMessage(
-                    "Lumberjack QuickMenu DEBUG: Using PySide2 Qt bindings\n"
-                )
-            except Exception:
-                pass
+            _lj_qm_dbg("Using PySide2 Qt bindings")
         except Exception as e:
-            try:
-                FreeCAD.Console.PrintMessage(
-                    "Lumberjack QuickMenu DEBUG: PySide2 import failed: {}\n".format(e)
-                )
-            except Exception:
-                pass
+            _dbg("PySide2 import failed: {}".format(e))
             try:
                 import PySide.QtGui as QtWidgets  # type: ignore
                 from PySide import QtCore, QtGui  # type: ignore
 
-                try:
-                    FreeCAD.Console.PrintMessage(
-                        "Lumberjack QuickMenu DEBUG: Using PySide (Qt4) bindings\n"
-                    )
-                except Exception:
-                    pass
+                _dbg("Using PySide (Qt4) bindings")
             except Exception as e2:
-                try:
-                    FreeCAD.Console.PrintMessage(
-                        "Lumberjack QuickMenu DEBUG: PySide import failed: {}\n".format(
-                            e2
-                        )
-                    )
-                except Exception:
-                    pass
+                _dbg("PySide import failed: {}".format(e2))
                 return
 
         mw = None
         try:
             mw = FreeCADGui.getMainWindow()
         except Exception as e:
-            try:
-                FreeCAD.Console.PrintMessage(
-                    "Lumberjack QuickMenu DEBUG: FreeCADGui.getMainWindow() failed: {}\n".format(
-                        e
-                    )
-                )
-            except Exception:
-                pass
+            _dbg("FreeCADGui.getMainWindow() failed: {}".format(e))
             mw = None
         if mw is None:
-            try:
-                FreeCAD.Console.PrintMessage(
-                    "Lumberjack QuickMenu DEBUG: No main window; cannot show pie menu\n"
-                )
-            except Exception:
-                pass
+            _dbg("No main window; cannot show pie menu")
             return
 
         try:
             center = QtGui.QCursor.pos()
         except Exception as e:
-            try:
-                FreeCAD.Console.PrintMessage(
-                    "Lumberjack QuickMenu DEBUG: QCursor.pos() failed: {}\n".format(e)
-                )
-            except Exception:
-                pass
+            _dbg("QCursor.pos() failed: {}".format(e))
             center = mw.mapToGlobal(mw.rect().center())
 
         commands = list(getattr(self, "_commands", []))
-        try:
-            FreeCAD.Console.PrintMessage(
-                "Lumberjack QuickMenu DEBUG: Pie menu commands: {}\n".format(
-                    [c for c, _ in commands]
-                )
-            )
-        except Exception:
-            pass
+        _dbg("Pie menu commands: {}".format([c for c, _ in commands]))
 
         class _PieMenuPopup(QtWidgets.QWidget):
             def __init__(self, parent=None):
@@ -599,14 +571,7 @@ class QuickMenuCommand:
                         ev.accept()
                         return
                 except Exception as e:
-                    try:
-                        FreeCAD.Console.PrintMessage(
-                            "Lumberjack QuickMenu DEBUG: Pie menu keyPressEvent exception: {}\n".format(
-                                e
-                            )
-                        )
-                    except Exception:
-                        pass
+                    _dbg("Pie menu keyPressEvent exception: {}".format(e))
                 super().keyPressEvent(ev)
 
             def focusOutEvent(self, ev):
@@ -628,14 +593,7 @@ class QuickMenuCommand:
                     painter.setPen(QtCore.Qt.NoPen)
                     painter.drawEllipse(rect)
                 except Exception as e:
-                    try:
-                        FreeCAD.Console.PrintMessage(
-                            "Lumberjack QuickMenu DEBUG: Pie menu paintEvent exception: {}\n".format(
-                                e
-                            )
-                        )
-                    except Exception:
-                        pass
+                    _dbg("Pie menu paintEvent exception: {}".format(e))
 
         popup = _PieMenuPopup(mw)
 
@@ -673,14 +631,11 @@ class QuickMenuCommand:
         except Exception:
             pass
         popup.setFocus()
-        try:
-            FreeCAD.Console.PrintMessage(
-                "Lumberjack QuickMenu DEBUG: Pie menu popup shown at {},{} (desired {},{})\n".format(
-                    top_left.x(), top_left.y(), desired_x, desired_y
-                )
+        _dbg(
+            "Pie menu popup shown at {},{} (desired {},{})".format(
+                top_left.x(), top_left.y(), desired_x, desired_y
             )
-        except Exception:
-            pass
+        )
 
 
 # =============================================================================
