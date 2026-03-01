@@ -13,6 +13,63 @@ import FreeCADGui
 import Part
 import Sketcher
 
+# =============================================================================
+# CONTAINER UTILITIES
+# =============================================================================
+
+
+def get_active_container():
+    """
+    Get the currently active container (App::Part or Assembly).
+
+    Returns the active 'part' object if one is set, otherwise None.
+    This allows bodies to be created inside the currently active container.
+    """
+    if FreeCADGui.ActiveDocument is None:
+        return None
+
+    try:
+        view = FreeCADGui.ActiveDocument.ActiveView
+        if view is not None and hasattr(view, "getActiveObject"):
+            # Check for active 'part' (App::Part container)
+            active_part = view.getActiveObject("part")
+            if active_part is not None:
+                return active_part
+    except Exception:
+        pass
+
+    return None
+
+
+def add_object_to_active_container(obj):
+    """
+    Add an object to the currently active container, if any.
+
+    Args:
+        obj: The FreeCAD object to add to the container
+
+    Returns:
+        The container the object was added to, or None if no active container
+    """
+    container = get_active_container()
+    if container is not None:
+        try:
+            # App::Part uses addObject method
+            if hasattr(container, "addObject"):
+                container.addObject(obj)
+                FreeCAD.Console.PrintMessage(
+                    "Lumberjack: Added '{}' to container '{}'\n".format(
+                        obj.Label, container.Label
+                    )
+                )
+                return container
+        except Exception as e:
+            FreeCAD.Console.PrintWarning(
+                "Lumberjack: Could not add '{}' to container: {}\n".format(obj.Label, e)
+            )
+    return None
+
+
 try:
     from PySide6 import QtCore, QtWidgets
 except ImportError:
@@ -306,6 +363,9 @@ def create_panel(name, thickness_expr, width_expr, height_expr):
     # Create the Body
     body = doc.addObject("PartDesign::Body", name)
     body.Label = name
+
+    # Add to active container if one is set
+    add_object_to_active_container(body)
 
     # Create the Sketch
     sketch = doc.addObject("Sketcher::SketchObject", "{}_Sketch".format(name))
