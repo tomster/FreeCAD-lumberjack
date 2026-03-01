@@ -389,56 +389,69 @@ def create_panel(name, thickness_expr, width_expr, height_expr):
             "Lumberjack: Could not find XY plane, sketch may not be properly attached.\n"
         )
 
-    # Create rectangle geometry
-    # Rectangle from origin: 4 lines forming a closed rectangle
-    # Line 0: bottom (0,0) to (width, 0)
+    # Create a centered rectangle
+    # Temporary half-dimensions (will be overridden by constraints)
+    hw, hh = 50, 50
+
+    # Create the 4 lines of the rectangle centered at origin
+    # Line 0: bottom
     sketch.addGeometry(
-        Part.LineSegment(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(100, 0, 0))
+        Part.LineSegment(FreeCAD.Vector(-hw, -hh, 0), FreeCAD.Vector(hw, -hh, 0))
     )
-    # Line 1: right (width, 0) to (width, height)
+    # Line 1: right
     sketch.addGeometry(
-        Part.LineSegment(FreeCAD.Vector(100, 0, 0), FreeCAD.Vector(100, 100, 0))
+        Part.LineSegment(FreeCAD.Vector(hw, -hh, 0), FreeCAD.Vector(hw, hh, 0))
     )
-    # Line 2: top (width, height) to (0, height)
+    # Line 2: top
     sketch.addGeometry(
-        Part.LineSegment(FreeCAD.Vector(100, 100, 0), FreeCAD.Vector(0, 100, 0))
+        Part.LineSegment(FreeCAD.Vector(hw, hh, 0), FreeCAD.Vector(-hw, hh, 0))
     )
-    # Line 3: left (0, height) to (0, 0)
+    # Line 3: left
     sketch.addGeometry(
-        Part.LineSegment(FreeCAD.Vector(0, 100, 0), FreeCAD.Vector(0, 0, 0))
+        Part.LineSegment(FreeCAD.Vector(-hw, hh, 0), FreeCAD.Vector(-hw, -hh, 0))
     )
 
-    # Add constraints to close the rectangle
-    # Coincident constraints to connect corners
+    # Connect corners to close the rectangle
     sketch.addConstraint(Sketcher.Constraint("Coincident", 0, 2, 1, 1))  # bottom-right
     sketch.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))  # top-right
     sketch.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))  # top-left
-    sketch.addConstraint(
-        Sketcher.Constraint("Coincident", 3, 2, 0, 1)
-    )  # bottom-left (close)
+    sketch.addConstraint(Sketcher.Constraint("Coincident", 3, 2, 0, 1))  # close
 
-    # Fix to origin
-    sketch.addConstraint(
-        Sketcher.Constraint("Coincident", 0, 1, -1, 1)
-    )  # bottom-left to origin
+    # Make lines horizontal/vertical
+    sketch.addConstraint(Sketcher.Constraint("Horizontal", 0))
+    sketch.addConstraint(Sketcher.Constraint("Horizontal", 2))
+    sketch.addConstraint(Sketcher.Constraint("Vertical", 1))
+    sketch.addConstraint(Sketcher.Constraint("Vertical", 3))
 
-    # Horizontal/Vertical constraints
-    sketch.addConstraint(Sketcher.Constraint("Horizontal", 0))  # bottom
-    sketch.addConstraint(Sketcher.Constraint("Horizontal", 2))  # top
-    sketch.addConstraint(Sketcher.Constraint("Vertical", 1))  # right
-    sketch.addConstraint(Sketcher.Constraint("Vertical", 3))  # left
+    # Center the rectangle by constraining bottom-left corner position
+    # relative to origin. We use width_expr/2 and height_expr/2 as expressions.
+    # Constraint indices for position (will set expressions on these)
+    pos_x_constraint_idx = sketch.addConstraint(
+        Sketcher.Constraint("DistanceX", -1, 1, 0, 1, -hw)
+    )
+    pos_y_constraint_idx = sketch.addConstraint(
+        Sketcher.Constraint("DistanceY", -1, 1, 0, 1, -hh)
+    )
 
-    # Add dimensional constraints for width (on bottom line) and height (on right line)
+    # Dimensional constraints for full width and height
     width_constraint_idx = sketch.addConstraint(
-        Sketcher.Constraint("DistanceX", 0, 1, 0, 2, 100)
+        Sketcher.Constraint("DistanceX", 0, 1, 0, 2, 2 * hw)
     )
     height_constraint_idx = sketch.addConstraint(
-        Sketcher.Constraint("DistanceY", 1, 1, 1, 2, 100)
+        Sketcher.Constraint("DistanceY", 1, 1, 1, 2, 2 * hh)
     )
 
     # Set expressions on the dimensional constraints
     sketch.setExpression("Constraints[{}]".format(width_constraint_idx), width_expr)
     sketch.setExpression("Constraints[{}]".format(height_constraint_idx), height_expr)
+
+    # Set expressions for centering: position = -dimension/2
+    sketch.setExpression(
+        "Constraints[{}]".format(pos_x_constraint_idx), "-({}) / 2".format(width_expr)
+    )
+    sketch.setExpression(
+        "Constraints[{}]".format(pos_y_constraint_idx), "-({}) / 2".format(height_expr)
+    )
 
     # Recompute sketch
     doc.recompute()
