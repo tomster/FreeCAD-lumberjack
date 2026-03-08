@@ -24,10 +24,9 @@ SPREADSHEET_LABEL = "Parameters"  # Human-readable label shown in tree
 # Default parameter presets - can be customized
 # Format: (param_name, default_value, description)
 DEFAULT_PARAMETERS = [
-    ("thickness", "18", "Material thickness (mm)"),
-    ("width", "600", "Overall width (mm)"),
-    ("height", "800", "Overall height (mm)"),
-    ("depth", "400", "Overall depth (mm)"),
+    ("t", "18", "Material thickness (mm)"),
+    ("w", "600", "Overall width (mm)"),
+    ("h", "800", "Overall height (mm)"),
 ]
 
 

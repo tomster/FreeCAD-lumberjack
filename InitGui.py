@@ -134,8 +134,11 @@ def _install_global_toolbar_late():
 
             _add_cmd("Lumberjack_QuickMenu", "QuickMenu")
             tb.addSeparator()
-            _add_cmd("Lumberjack_NewProject", "New Project")
+            _add_cmd("Lumberjack_NewPartContainer", "New Part")
             _add_cmd("Lumberjack_CreatePanel", "Create Panel")
+            _add_cmd("Lumberjack_TransformPart", "Transform")
+            tb.addSeparator()
+            _add_cmd("Lumberjack_NewProject", "New Project")
             _add_cmd("Lumberjack_SyncAliases", "Sync Parameter Aliases")
 
             _msg("installed global toolbar: {}".format(toolbar_name))
@@ -416,6 +419,218 @@ class CreatePanelCommand:
         panels.show_create_panel_dialog()
 
 
+class NewPartContainerCommand:
+    """Command to create a new App::Part container.
+
+    Unlike Std_Part, this command:
+    - Asks for a name before creation (avoiding a rename step).
+    - Nests the new part inside the currently active container, if any.
+    - Activates the newly created container.
+    """
+
+    def GetResources(self):
+        return {
+            "MenuText": "New Part Container",
+            "ToolTip": (
+                "Create a new Part container. If a Part is currently active, "
+                "the new container is placed inside it. You will be prompted "
+                "for a name first."
+            ),
+            "Pixmap": "Geofeaturegroup",
+        }
+
+    def IsActive(self):
+        return FreeCAD.ActiveDocument is not None
+
+    def Activated(self):
+        """Prompt for a name, create the App::Part, nest & activate it."""
+        try:
+            from PySide2 import QtWidgets  # type: ignore
+        except Exception:
+            from PySide import QtGui as QtWidgets  # type: ignore
+
+        doc = FreeCAD.ActiveDocument
+        if doc is None:
+            FreeCAD.Console.PrintError("Lumberjack: No active document.\n")
+            return
+
+        # --- Ask for a name ---------------------------------------------------
+        name, ok = QtWidgets.QInputDialog.getText(
+            FreeCADGui.getMainWindow(),
+            "New Part Container",
+            "Name for the new Part container:",
+            QtWidgets.QLineEdit.Normal,
+            "Part",
+        )
+        if not ok or not name or not name.strip():
+            return
+        name = name.strip()
+
+        # --- Detect current active container ----------------------------------
+        parent_container = None
+        try:
+            view = FreeCADGui.ActiveDocument.ActiveView
+            if view is not None and hasattr(view, "getActiveObject"):
+                parent_container = view.getActiveObject("part")
+        except Exception:
+            parent_container = None
+
+        # --- Create the App::Part ---------------------------------------------
+        part = doc.addObject("App::Part", name)
+        part.Label = name
+        FreeCAD.Console.PrintMessage(
+            "Lumberjack: Created Part container '{}'\n".format(name)
+        )
+
+        # --- Nest inside parent container if one was active --------------------
+        if parent_container is not None:
+            try:
+                parent_container.addObject(part)
+                FreeCAD.Console.PrintMessage(
+                    "Lumberjack: Placed '{}' inside '{}'\n".format(
+                        name, parent_container.Label
+                    )
+                )
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(
+                    "Lumberjack: Could not nest '{}' in '{}': {}\n".format(
+                        name, parent_container.Label, e
+                    )
+                )
+
+        # --- Activate the new container ---------------------------------------
+        try:
+            view = FreeCADGui.ActiveDocument.ActiveView
+            if view is not None and hasattr(view, "setActiveObject"):
+                view.setActiveObject("part", part)
+                FreeCAD.Console.PrintMessage(
+                    "Lumberjack: Activated Part container '{}'\n".format(name)
+                )
+        except Exception as e:
+            FreeCAD.Console.PrintWarning(
+                "Lumberjack: Could not activate '{}': {}\n".format(name, e)
+            )
+
+        doc.recompute()
+
+
+class TransformPartCommand:
+    """Command to open the interactive Transform dragger for the selected object.
+
+    If the current selection points at a sub-element (face, edge, vertex)
+    the command walks up through parent containers until it finds an object
+    that supports the Transform edit mode (Body, Part, Assembly).  It then
+    adjusts the selection and invokes ``Std_TransformManip``.
+    """
+
+    # Types that support the Transform edit mode (have a Placement property
+    # and a ViewProvider that inherits from ViewProviderDragger).
+    _TRANSFORMABLE_TYPES = (
+        "App::Part",
+        "PartDesign::Body",
+        "Part::Feature",
+        "Assembly::AssemblyObject",
+    )
+
+    def GetResources(self):
+        return {
+            "MenuText": "Transform Part",
+            "ToolTip": (
+                "Open the interactive transform dragger for the selected "
+                "object.  If a face/edge/vertex is selected the owning "
+                "Body or Part is transformed instead."
+            ),
+            "Pixmap": "Std_TransformManip",
+        }
+
+    def _find_transformable(self, obj):
+        """Walk up from *obj* to the nearest ancestor that can be transformed.
+
+        If *obj* itself is transformable, return it immediately.
+        Otherwise climb through InList (parent containers) looking for a
+        Body, Part or Assembly.  Returns None when nothing suitable is found.
+        """
+        if obj is None:
+            return None
+
+        try:
+            _dummy = obj.TypeId
+        except Exception:
+            return None
+
+        for t in self._TRANSFORMABLE_TYPES:
+            try:
+                if obj.isDerivedFrom(t):
+                    return obj
+            except Exception:
+                pass
+
+        # Walk up through parents (InList).  BFS — nearest ancestor first.
+        visited = set()
+        queue = list(getattr(obj, "InList", []))
+        while queue:
+            parent = queue.pop(0)
+            pid = id(parent)
+            if pid in visited:
+                continue
+            visited.add(pid)
+            for t in self._TRANSFORMABLE_TYPES:
+                try:
+                    if parent.isDerivedFrom(t):
+                        return parent
+                except Exception:
+                    pass
+            queue.extend(getattr(parent, "InList", []))
+
+        return None
+
+    def IsActive(self):
+        try:
+            if FreeCAD.ActiveDocument is None:
+                return False
+            sel = FreeCADGui.Selection.getSelection()
+            if not sel:
+                return False
+            return self._find_transformable(sel[0]) is not None
+        except Exception:
+            return False
+
+    def Activated(self):
+        """Resolve selection to a transformable object, then run Std_TransformManip."""
+        try:
+            sel = FreeCADGui.Selection.getSelection()
+            if not sel:
+                FreeCAD.Console.PrintWarning(
+                    "Lumberjack: Nothing selected — select an object first.\n"
+                )
+                return
+
+            target = self._find_transformable(sel[0])
+            if target is None:
+                FreeCAD.Console.PrintWarning(
+                    "Lumberjack: '{}' is not transformable and has no "
+                    "transformable parent container.\n".format(sel[0].Label)
+                )
+                return
+
+            # Replace the selection so Std_TransformManip picks up the right object.
+            if target is not sel[0]:
+                FreeCAD.Console.PrintMessage(
+                    "Lumberjack: Resolved selection '{}' → '{}' for transform.\n".format(
+                        sel[0].Label, target.Label
+                    )
+                )
+                doc_name = target.Document.Name
+                FreeCADGui.Selection.clearSelection()
+                FreeCADGui.Selection.addSelection(doc_name, target.Name)
+
+            FreeCADGui.runCommand("Std_TransformManip")
+        except Exception as e:
+            FreeCAD.Console.PrintError(
+                "Lumberjack: Transform command failed: {}\n".format(e)
+            )
+
+
 class QuickMenuCommand:
     """Global popup menu for quick access to Lumberjack commands."""
 
@@ -423,9 +638,10 @@ class QuickMenuCommand:
         # Store commands on the instance so command execution doesn't depend on
         # module-level globals being resolvable later.
         self._commands = [
-            ("Lumberjack_NewProject", "New Project"),
+            ("Lumberjack_NewPartContainer", "New Part"),
             ("Lumberjack_CreatePanel", "Create Panel"),
-            ("Lumberjack_SyncAliases", "Sync Parameter Aliases"),
+            ("Lumberjack_SyncAliases", "Sync Aliases"),
+            ("Lumberjack_TransformPart", "Transform"),
         ]
 
     def GetResources(self):
@@ -505,10 +721,12 @@ class QuickMenuCommand:
                 for cmd_name, label in self._commands:
                     b = QtWidgets.QToolButton(self)
                     hint = ""
-                    if cmd_name == "Lumberjack_NewProject":
+                    if cmd_name == "Lumberjack_NewPartContainer":
                         hint = " (N)"
                     elif cmd_name == "Lumberjack_CreatePanel":
                         hint = " (P)"
+                    elif cmd_name == "Lumberjack_TransformPart":
+                        hint = " (⏎)"
                     b.setText(label + hint)
                     b.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
                     b.setAutoRaise(True)
@@ -521,7 +739,8 @@ class QuickMenuCommand:
                 self._layout_buttons()
 
             def _layout_buttons(self):
-                # Place buttons at 120° increments (top, bottom-left, bottom-right)
+                # Place buttons at even angular increments around the circle.
+                # 4 buttons → 90° apart (top, right, bottom, left).
                 w = self.width()
                 h = self.height()
                 cx = w // 2
@@ -529,9 +748,10 @@ class QuickMenuCommand:
 
                 import math
 
-                angles = [-90, 150, 30]  # degrees
+                n = len(self._buttons)
+                base_angle = -90  # first button at top
                 for i, b in enumerate(self._buttons):
-                    ang = angles[i % len(angles)]
+                    ang = base_angle + i * (360.0 / n)
                     rad = math.radians(ang)
                     x = int(cx + self._radius * math.cos(rad) - (b.width() // 2))
                     y = int(cy + self._radius * math.sin(rad) - (b.height() // 2))
@@ -558,16 +778,22 @@ class QuickMenuCommand:
                         return
 
                     # Single-key shortcuts while the pie menu is open:
-                    #  - n: New Project
+                    #  - n: New Part Container
                     #  - p: Create Panel
+                    #  - Enter: Transform Part
                     if k == "n":
                         self.close()
-                        FreeCADGui.runCommand("Lumberjack_NewProject")
+                        FreeCADGui.runCommand("Lumberjack_NewPartContainer")
                         ev.accept()
                         return
                     if k == "p":
                         self.close()
                         FreeCADGui.runCommand("Lumberjack_CreatePanel")
+                        ev.accept()
+                        return
+                    if ev.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+                        self.close()
+                        FreeCADGui.runCommand("Lumberjack_TransformPart")
                         ev.accept()
                         return
                 except Exception as e:
@@ -645,6 +871,8 @@ class QuickMenuCommand:
 FreeCADGui.addCommand("Lumberjack_NewProject", NewProjectCommand())
 FreeCADGui.addCommand("Lumberjack_SyncAliases", SyncAliasesCommand())
 FreeCADGui.addCommand("Lumberjack_CreatePanel", CreatePanelCommand())
+FreeCADGui.addCommand("Lumberjack_NewPartContainer", NewPartContainerCommand())
+FreeCADGui.addCommand("Lumberjack_TransformPart", TransformPartCommand())
 FreeCADGui.addCommand("Lumberjack_QuickMenu", QuickMenuCommand())
 
 # Install a global toolbar (visible from any workbench).
@@ -697,9 +925,11 @@ static char * lumberjack_xpm[] = {
         self.appendMenu(
             "Lumberjack",
             [
-                "Lumberjack_NewProject",
+                "Lumberjack_NewPartContainer",
                 "Lumberjack_CreatePanel",
+                "Lumberjack_TransformPart",
                 "Separator",
+                "Lumberjack_NewProject",
                 "Lumberjack_SyncAliases",
             ],
         )
@@ -708,8 +938,11 @@ static char * lumberjack_xpm[] = {
         self.appendToolbar(
             "Lumberjack",
             [
-                "Lumberjack_NewProject",
+                "Lumberjack_NewPartContainer",
                 "Lumberjack_CreatePanel",
+                "Lumberjack_TransformPart",
+                "Separator",
+                "Lumberjack_NewProject",
                 "Lumberjack_SyncAliases",
             ],
         )
