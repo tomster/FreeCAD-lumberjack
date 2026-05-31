@@ -40,6 +40,55 @@ Creates furniture panels as PartDesign bodies with parametric dimensions:
 
 The dialog uses FreeCAD's native expression input (`Gui::QuantitySpinBox`) with full auto-completion support. All expressions remain editable on the created objects.
 
+### Create Drawer Command
+
+Creates a complete parametric drawer as a `Std_Part` (App::Part) containing PartDesign
+bodies — two sides, a front, a back, a bottom, and an optional dedicated drawer front.
+The drawer is placed inside the currently active container (if any).
+
+**Box parameters** (always present):
+
+- **Name**: base name for the drawer Part and its bodies.
+- **Width / Height / Depth**: outer box dimensions (mm).
+- **Side thickness** (`t_side`): thickness of the side/front/back panels.
+- **Bottom thickness** (`t_bottom`): thickness of the bottom panel.
+- **Bottom offset** (`bottom_v_offset`): raises the bottom panel above the flush position.
+
+**Options:**
+
+- **Box joints** (`overlap_box`): when checked, the box panels are dimensioned to fully
+  overlap (box-joint style — the joints themselves are not modelled). When unchecked, the
+  sides are shortened by `t_side` for half-lap dado construction. This option stays live
+  and editable on the created drawer.
+- **Add a dedicated drawer front** (`has_front`): when checked, an extra front panel is
+  added with its own parameters:
+  - **Front width / Front height** (`width_front`, `height_front`): outer size of the front.
+  - **Front thickness** (`t_front`).
+  - **Front offset** (`front_v_offset`): positive values move the front *down*; the front's
+    lower edge sits at `z = -front_v_offset`.
+
+**Joinery:** The bottom is captured in a groove (width `0.5 * t_bottom`) cut into the inner
+faces of the side, front, and back panels ("captured-bottom drawer"), and the bottom panel
+carries a matching perimeter rabbet so its upper-half tongue seats into the grooves.
+
+**Coordinate system:** The bottom panel is centered on the Part origin in X (width) and Y
+(depth); its bottom face is at `z = 0` (at the default `bottom_v_offset` of 0).
+
+**Parameters / data model:** Every parameter is stored as an editable, expression-capable
+property. Because FreeCAD raises a cyclic-reference error when a child body references its
+parent App::Part's properties, the parameters live on a lightweight sibling holder object
+(labelled "… Parameters") inside the drawer Part. Edit values there (or bind them to a
+spreadsheet cell, e.g. `p.drawer_width`) and recompute — the panels update accordingly.
+The holder has no shape, so it is ignored by the cutlist; each panel body is named after
+the drawer (e.g. `Drawer_SideL`, `Drawer_Bottom`) and is picked up by the cutlist generator.
+
+**Notes:**
+
+- All dialog fields (including the checkboxes) remember their last value/expression between
+  invocations, to streamline creating several similar drawers in a row.
+- `has_front` is applied at creation time: toggling it later on the holder will not add or
+  remove the drawer-front body.
+
 ### Sync Aliases Command
 
 Manually sync all aliases in the parameter spreadsheet. Useful if:
@@ -97,6 +146,21 @@ Copy the entire `Lumberjack` folder to your FreeCAD Mod directory:
 5. Click "Create"
 
 The panel is created as a PartDesign Body with a sketch and pad. All dimensions are expression-driven.
+
+### Creating Drawers
+
+1. Ensure you have an active document and (optionally) activate the container the drawer
+   should be placed in.
+2. Click "Create Drawer" in the toolbar, use **Lumberjack → Create Drawer**, or press
+   **D** in the Lumberjack quick menu.
+3. Enter a name and set the box dimensions (width, height, depth, side/bottom thickness).
+4. Optionally tick **Box joints** for overlapping panels, and **Add a dedicated drawer
+   front** to enable the front-panel fields.
+5. Click "Create".
+
+The drawer is created as a `Std_Part` containing the panel bodies. All dimensions stay
+editable on the parameter holder inside the Part (and can reference spreadsheet cells), and
+every panel body is exposed to the cutlist generator.
 
 ## Parameter Naming Rules
 

@@ -136,6 +136,7 @@ def _install_global_toolbar_late():
             tb.addSeparator()
             _add_cmd("Lumberjack_NewPartContainer", "New Part")
             _add_cmd("Lumberjack_CreatePanel", "Create Panel")
+            _add_cmd("Lumberjack_CreateDrawer", "Create Drawer")
             _add_cmd("Lumberjack_TransformPart", "Transform")
             tb.addSeparator()
             _add_cmd("Lumberjack_NewProject", "New Project")
@@ -419,6 +420,26 @@ class CreatePanelCommand:
         panels.show_create_panel_dialog()
 
 
+class CreateDrawerCommand:
+    """Command to create a new parametric drawer."""
+
+    def GetResources(self):
+        return {
+            "MenuText": "Create Drawer",
+            "ToolTip": "Create a new parametric drawer (Std_Part with PartDesign panel bodies)",
+            "Pixmap": "PartDesign_Body",
+        }
+
+    def IsActive(self):
+        return FreeCAD.ActiveDocument is not None
+
+    def Activated(self):
+        """Execute the command."""
+        import drawers
+
+        drawers.show_create_drawer_dialog()
+
+
 class NewPartContainerCommand:
     """Command to create a new App::Part container.
 
@@ -640,6 +661,7 @@ class QuickMenuCommand:
         self._commands = [
             ("Lumberjack_NewPartContainer", "New Part"),
             ("Lumberjack_CreatePanel", "Create Panel"),
+            ("Lumberjack_CreateDrawer", "Create Drawer"),
             ("Lumberjack_SyncAliases", "Sync Aliases"),
             ("Lumberjack_TransformPart", "Transform"),
         ]
@@ -725,6 +747,8 @@ class QuickMenuCommand:
                         hint = " (N)"
                     elif cmd_name == "Lumberjack_CreatePanel":
                         hint = " (P)"
+                    elif cmd_name == "Lumberjack_CreateDrawer":
+                        hint = " (D)"
                     elif cmd_name == "Lumberjack_TransformPart":
                         hint = " (⏎)"
                     b.setText(label + hint)
@@ -789,6 +813,11 @@ class QuickMenuCommand:
                     if k == "p":
                         self.close()
                         FreeCADGui.runCommand("Lumberjack_CreatePanel")
+                        ev.accept()
+                        return
+                    if k == "d":
+                        self.close()
+                        FreeCADGui.runCommand("Lumberjack_CreateDrawer")
                         ev.accept()
                         return
                     if ev.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
@@ -871,6 +900,7 @@ class QuickMenuCommand:
 FreeCADGui.addCommand("Lumberjack_NewProject", NewProjectCommand())
 FreeCADGui.addCommand("Lumberjack_SyncAliases", SyncAliasesCommand())
 FreeCADGui.addCommand("Lumberjack_CreatePanel", CreatePanelCommand())
+FreeCADGui.addCommand("Lumberjack_CreateDrawer", CreateDrawerCommand())
 FreeCADGui.addCommand("Lumberjack_NewPartContainer", NewPartContainerCommand())
 FreeCADGui.addCommand("Lumberjack_TransformPart", TransformPartCommand())
 FreeCADGui.addCommand("Lumberjack_QuickMenu", QuickMenuCommand())
@@ -927,6 +957,7 @@ static char * lumberjack_xpm[] = {
             [
                 "Lumberjack_NewPartContainer",
                 "Lumberjack_CreatePanel",
+                "Lumberjack_CreateDrawer",
                 "Lumberjack_TransformPart",
                 "Separator",
                 "Lumberjack_NewProject",
@@ -940,6 +971,7 @@ static char * lumberjack_xpm[] = {
             [
                 "Lumberjack_NewPartContainer",
                 "Lumberjack_CreatePanel",
+                "Lumberjack_CreateDrawer",
                 "Lumberjack_TransformPart",
                 "Separator",
                 "Lumberjack_NewProject",
