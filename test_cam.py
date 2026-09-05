@@ -272,6 +272,44 @@ def main():
     check(len(cam.find_lumberjack_jobs(doc, [part.Name])) == 3, "the other drawer keeps full job coverage")
     check(len(doc.Objects) == n_after, "still no leaked objects")
 
+    # --- bottom-left origin: mirrored layout, Y positive ------------------------------
+    sb_ = cam.CamSettings()
+    sb_.__dict__.update(s.__dict__)
+    sb_.origin = cam.ORIGIN_BOTTOM_LEFT
+    results_b, problems, _ = cam.run([(part, holder), (part_c, holder_c)], sb_)
+    check(not problems, "bottom-left run ok")
+    rb = [r for r in results_b if r.thickness == 12.0][0]
+    jb = rb.job
+    bbs = jb.Stock.Shape.BoundBox
+    check(abs(bbs.YMin) < 1e-6 and abs(bbs.YMax - 1080) < 1e-6, "bottom-left: stock spans Y 0..1080")
+    for placed in rb.sheet.items:
+        clone = [c for c in jb.Model.Group if c.Objects and c.Objects[0].Name == placed.item.data.body.Name][0]
+        bb = clone.Shape.BoundBox
+        check(abs(bb.XMin - placed.u0) < 1e-6 and abs(bb.YMin - placed.v0) < 1e-6, "{} hugs bottom-left placement".format(clone.Label))
+        check(abs(bb.XLength - placed.du) < 1e-6 and abs(bb.YLength - placed.dv) < 1e-6, "{} orientation kept".format(clone.Label))
+    ops_b = jb.Proxy.allOperations()
+    cuts_b = [o for o in ops_b if o.Name.startswith("Cut12mm_1_") and not (hasattr(o, "Base") and not isinstance(o.Base, list) and o.Base is not None)]
+    cuts_b.sort(key=lambda o: int(o.Name[len("Cut12mm_1_"):-1]))
+    for line, op in zip(rb.sheet.lines, cuts_b):
+        if line.axis == "h":
+            check(abs(op.CustomPoint1.y - line.pos) < 1e-6, "{} at y = +{}".format(op.Label, line.pos))
+        else:
+            check(abs(op.CustomPoint1.x - line.pos) < 1e-6, "{} at x = {}".format(op.Label, line.pos))
+    # an unrotated wall (if any) must have its groove away from the bottom edge
+    for placed in rb.sheet.items:
+        ref = placed.item.data
+        if placed.rotated or ref.role not in ("SideL", "SideR", "Front", "Back"):
+            continue
+        clone = [c for c in jb.Model.Group if c.Objects and c.Objects[0].Name == ref.body.Name][0]
+        gs = [o for o in ops_b if o.Label.startswith("{}_{}_Groove".format(ref.part.Label, ref.role))]
+        check(gs and all(o.CustomPoint1.y > clone.Shape.BoundBox.Center.y for o in gs),
+              "bottom-left: groove of {} lies away from the bottom edge".format(clone.Label))
+    xr = xy_range_in_gcode(rb.gcode_files[0])
+    check(xr[2] >= -d and xr[3] <= 1080, "bottom-left gcode Y is positive: {}".format(xr))
+    summary = "\n".join(cam.summarize_results(results_b, [], cam.ORIGIN_BOTTOM_LEFT))
+    check("bottom edge" in summary, "summary names the bottom edge")
+    check(len(doc.Objects) == n_after, "no leak after origin switch")
+
     # --- recreate a drawer and re-run --------------------------------------------------
     cam.run([(part, holder)], s)
     old_name = part.Name

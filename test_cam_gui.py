@@ -67,6 +67,10 @@ def main():
     check(s.tool_d == dlg.bits[idx].diameter, "settings carry the bit diameter")
     check(s.sheet_w > 0 and s.clamp_h > 0 and s.feed_xy > 0 and s.step_down > 0, "quantity spinboxes read back")
     check(s.post, "post processor selected: {}".format(s.post))
+    check(s.origin in cam.ORIGINS, "origin corner read from the combo: {}".format(s.origin))
+    dlg.origin_combo.setCurrentIndex(1)
+    check(dlg.get_settings().origin == cam.ORIGIN_BOTTOM_LEFT, "bottom-left selectable")
+    dlg.origin_combo.setCurrentIndex(0)
     dlg.deleteLater()
 
     results, problems, warnings = cam.run(drawers_sel, s)

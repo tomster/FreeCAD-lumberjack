@@ -130,6 +130,9 @@ The dialog asks for (all values are remembered):
 - **Sheet width / height**: the machine work area, default 630 x 1080 mm. Every panel
   must fit in some orientation (with tool clearance at the right/bottom edges).
 - **Clamp height** (default 20 mm): rapids travel 2 mm above it.
+- **Origin corner**: *top-left* (zero at the far-left corner, Y negative towards you) or
+  *bottom-left* (zero at the near-left corner, Y positive). Panels hug the two sheet edges
+  at that corner, which are the clamping edges.
 - **Post processor** (default `uccnc`) and whether to **write the G-code now**.
 
 Nesting (`nesting.py`): the panels of all selected drawers are grouped by thickness and
@@ -141,9 +144,10 @@ positions where cuts do reach those edges. Panels that do not fit go onto anothe
 
 Per sheet one Job labelled `CAM <t>mm sheet <n> (<drawers>)`:
 
-- **Coordinates**: zero is the sheet's top-left corner, X to the right, Y negative
-  towards the operator, Z = 0 on the sheet surface. Cut a blank at least as large as
-  the reported minimum, square at that corner, and zero the machine there.
+- **Coordinates**: zero is the chosen sheet corner, X to the right, Z = 0 on the sheet
+  surface; Y is negative (top-left origin) or positive (bottom-left origin). Cut a blank
+  at least as large as the reported minimum, square at that corner, and zero the machine
+  there.
 - The models are the panel bodies laid flat, pocketed face up, at their nested places.
   The stock is the whole sheet.
 - **Slot passes** for the bottom groove of the walls, the half-lap end rabbets of the

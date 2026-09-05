@@ -14,8 +14,9 @@ Workflow
 3. The panels of all selected drawers are nested per thickness on sheets (nesting.py):
    panels hug the sheet's top-left corner, neighbours are one tool diameter apart so a
    single cut separates both. One CAM Job per sheet: the models are the panel bodies laid
-   flat (pocketed face up, top face at Z = 0), the stock is the whole sheet with its
-   top-left corner at the origin (X to the right, Y negative towards the operator).
+   flat (pocketed face up, top face at Z = 0), the stock is the whole sheet with the
+   chosen reference corner at the origin: top-left (X to the right, Y negative towards
+   the operator) or bottom-left (Y positive). Panels hug the two edges at that corner.
    Operations: Slot passes for the bottom groove, the half-lap rabbets and the bottom's
    perimeter rabbet; one Slot per merged cut line with a Tags dress-up. Finally each Job
    is post-processed to <docdir>/<Doc>_CAM_<t>mm_<n>.nc.
@@ -65,6 +66,9 @@ TAB_HEIGHT = 3.0  # mm (capped at half the panel thickness)
 DEFAULT_SHEET_W = 630.0  # mm, machine work area X
 DEFAULT_SHEET_H = 1080.0  # mm, machine work area Y
 DEFAULT_CLAMP_H = 20.0  # mm, rapids clear this plus CLAMP_CLEARANCE_EXTRA
+ORIGIN_TOP_LEFT = "top-left"  # zero at the far-left corner, Y negative towards the operator
+ORIGIN_BOTTOM_LEFT = "bottom-left"  # zero at the near-left corner, Y positive
+ORIGINS = (ORIGIN_TOP_LEFT, ORIGIN_BOTTOM_LEFT)
 CLAMP_CLEARANCE_EXTRA = 2.0
 PASS_OVERLAP = 0.5  # step-over between parallel slot passes as fraction of tool diameter
 PASS_EXTENSION_EXTRA = 1.0  # mm beyond the tool radius that open-ended passes overshoot
@@ -318,6 +322,7 @@ class CamSettings:
         self.sheet_w = 630.0
         self.sheet_h = 1080.0
         self.clamp_h = 20.0
+        self.origin = ORIGIN_TOP_LEFT
         self.post = ""
         self.spindle = 0.0
         self.feed_xy = 0.0
@@ -645,16 +650,18 @@ def _setup_tool(job, doc, settings):
 
 
 def _setup_stock(job, doc, settings, thickness):
-    """The stock is the whole sheet: X 0..sheet_w, Y -sheet_h..0, Z -t..0."""
+    """
+    The stock is the whole sheet: X 0..sheet_w, Z -t..0 and Y -sheet_h..0 (top-left
+    origin) or 0..sheet_h (bottom-left origin).
+    """
     import Path.Main.Stock as PathStock
 
+    y0 = -settings.sheet_h if settings.origin == ORIGIN_TOP_LEFT else 0.0
     old = job.Stock
     stock = PathStock.CreateBox(
         job,
         extent=Vector(settings.sheet_w, settings.sheet_h, thickness),
-        placement=FreeCAD.Placement(
-            Vector(0, -settings.sheet_h, -thickness), FreeCAD.Rotation()
-        ),
+        placement=FreeCAD.Placement(Vector(0, y0, -thickness), FreeCAD.Rotation()),
     )
     job.Stock = stock
     if old is not None:
@@ -775,34 +782,51 @@ def post_process(job, doc):
 # --- layout -> job placement ---------------------------------------------------
 
 
-def _clone_placement(frame, placed):
+def _clone_placement(frame, placed, origin):
     """
-    Rotation that lays a panel flat on the sheet.
+    Rotation that lays a panel flat on the sheet, featured face up.
 
-    Featured face up. Unrotated: panel length along +X, panel-frame "up" (v) along +Y, so
-    the groove side of a wall ends up away from the sheet's top edge. Rotated: length along
-    +Y, v along -X, so the groove side ends up away from the sheet's left edge.
+    Unrotated: panel length along X, and the panel-frame "up" side (v, where a wall's
+    groove is NOT) pointing away from the reference edge along X, i.e. towards -Y for a
+    top-left origin and +Y for a bottom-left origin. Rotated: length along +Y, v along -X,
+    so the groove side ends up away from the sheet's left edge (the reference edge in both
+    cases).
     """
     rot = frame.rotation()  # U -> X, V -> Y, N -> Z
     if placed.rotated:
         rot = FreeCAD.Rotation(Vector(0, 0, 1), 90).multiply(rot)  # X -> Y, Y -> -X
+    elif origin == ORIGIN_BOTTOM_LEFT:
+        rot = FreeCAD.Rotation(Vector(0, 0, 1), 180).multiply(rot)  # X -> -X, Y -> -Y
     return FreeCAD.Placement(Vector(0, 0, 0), rot)
 
 
-def _place_clone(doc, clone, frame, placed):
-    """Position a model clone at its nested location (top-left corner at (u0, -v0))."""
-    clone.Placement = _clone_placement(frame, placed)
+def _place_clone(doc, clone, frame, placed, origin):
+    """Position a model clone at its nested location (reference corner at (u0, ±v0))."""
+    clone.Placement = _clone_placement(frame, placed, origin)
     doc.recompute()
     bb = clone.Shape.BoundBox
     pl = clone.Placement
-    pl.Base = pl.Base + Vector(placed.u0 - bb.XMin, -placed.v0 - bb.YMax, -bb.ZMax)
+    if origin == ORIGIN_TOP_LEFT:
+        dy = -placed.v0 - bb.YMax
+    else:
+        dy = placed.v0 - bb.YMin
+    pl.Base = pl.Base + Vector(placed.u0 - bb.XMin, dy, -bb.ZMax)
     clone.Placement = pl
     doc.recompute()
 
 
-def layout_to_job(u, v):
-    """Layout frame (u right, v down from the top-left corner) -> job XY."""
-    return Vector(u, -v, 0)
+def layout_to_job(u, v, origin):
+    """
+    Layout frame (u right, v away from the reference edge along X) -> job XY.
+
+    Top-left origin: Y = -v. Bottom-left origin: Y = +v.
+    """
+    return Vector(u, -v if origin == ORIGIN_TOP_LEFT else v, 0)
+
+
+def edge_name_along_x(origin):
+    """Physical name of the sheet edge that lies along X at Y = 0."""
+    return "top" if origin == ORIGIN_TOP_LEFT else "bottom"
 
 
 class PanelRef:
@@ -880,7 +904,7 @@ def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir):
             continue
         for placed in sheet.items:
             if placed.item.data.body.Name == src.Name:
-                _place_clone(doc, clone, placed.item.data.frame, placed)
+                _place_clone(doc, clone, placed.item.data.frame, placed, settings.origin)
                 clones[placed.item.key] = clone
                 break
 
@@ -909,13 +933,15 @@ def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir):
 
     # Outline cuts: one Slot per merged cut line, tabs from the nest.
     cut_ops = []
+    origin = settings.origin
     for i, line in enumerate(sheet.lines):
         if line.axis == "h":
-            p1, p2 = layout_to_job(line.a0, line.pos), layout_to_job(line.a1, line.pos)
-            tabs = [(t, -line.pos) for t in line.tabs]
+            p1, p2 = layout_to_job(line.a0, line.pos, origin), layout_to_job(line.a1, line.pos, origin)
+            tabs = [layout_to_job(t, line.pos, origin) for t in line.tabs]
         else:
-            p1, p2 = layout_to_job(line.pos, line.a0), layout_to_job(line.pos, line.a1)
-            tabs = [(line.pos, -t) for t in line.tabs]
+            p1, p2 = layout_to_job(line.pos, line.a0, origin), layout_to_job(line.pos, line.a1, origin)
+            tabs = [layout_to_job(line.pos, t, origin) for t in line.tabs]
+        tabs = [(t.x, t.y) for t in tabs]
         name = "Cut{:g}mm_{}_{}{}".format(thickness, sheet_no, i + 1, "H" if line.axis == "h" else "V")
         op = _make_slot(job, name, tc, p1, p2, 0.0, thickness + THROUGH_OVERCUT, settings.step_down)
         cut_ops.append((op, tabs, name))
@@ -1099,6 +1125,12 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
         self._row(machine_layout, "Sheet height (Y)", self.sheet_h)
         self.clamp_h = self._quantity_spinbox("clamp_h", DEFAULT_CLAMP_H)
         self._row(machine_layout, "Clamp height", self.clamp_h)
+        self.origin_combo = QtWidgets.QComboBox()
+        self.origin_combo.addItem("Top-left corner (Y negative towards you)", ORIGIN_TOP_LEFT)
+        self.origin_combo.addItem("Bottom-left corner (Y positive)", ORIGIN_BOTTOM_LEFT)
+        last_origin = _get_last_str(_pref("origin"), ORIGIN_TOP_LEFT)
+        self.origin_combo.setCurrentIndex(max(0, self.origin_combo.findData(last_origin)))
+        self._row(machine_layout, "Origin corner", self.origin_combo)
         self.post_combo = QtWidgets.QComboBox()
         try:
             posts = available_post_processors()
@@ -1117,10 +1149,10 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
         layout.addWidget(self.write_check)
 
         note = QtWidgets.QLabel(
-            "Zero is the sheet's top-left corner (X right, Y negative towards you). Panels "
-            "hug the top and left edges; clamp there. One Job per sheet and thickness; "
-            "existing Jobs of these drawers are replaced. Tabs {:g} mm wide, {:g} mm high, "
-            "rapids clear the clamp height.".format(TAB_WIDTH, TAB_HEIGHT)
+            "Zero is the chosen sheet corner (X to the right). Panels hug the two sheet "
+            "edges at that corner; clamp there. One Job per sheet and thickness; existing "
+            "Jobs of these drawers are replaced. Tabs {:g} mm wide, {:g} mm high, rapids "
+            "clear the clamp height.".format(TAB_WIDTH, TAB_HEIGHT)
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1150,6 +1182,7 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
         s.sheet_w = self._raw(self.sheet_w)
         s.sheet_h = self._raw(self.sheet_h)
         s.clamp_h = self._raw(self.clamp_h)
+        s.origin = self.origin_combo.currentData() or ORIGIN_TOP_LEFT
         s.post = self.post_combo.currentText()
         s.spindle = float(self.spindle.value())
         s.feed_xy = self._raw(self.feed_xy)
@@ -1164,6 +1197,7 @@ def remember_settings(s):
     _set_last_str(_pref("sheet_w"), str(s.sheet_w))
     _set_last_str(_pref("sheet_h"), str(s.sheet_h))
     _set_last_str(_pref("clamp_h"), str(s.clamp_h))
+    _set_last_str(_pref("origin"), s.origin)
     _set_last_str(_pref("post"), s.post)
     _set_last_str(_pref("spindle"), str(s.spindle))
     _set_last_str(_pref("feed_xy"), str(s.feed_xy))
@@ -1185,8 +1219,9 @@ def _message(title, text, error=False):
         box.exec_()
 
 
-def summarize_results(results, warnings):
+def summarize_results(results, warnings, origin=ORIGIN_TOP_LEFT):
     lines = []
+    x_edge = edge_name_along_x(origin)
     for r in results:
         s = r.sheet
         lines.append(
@@ -1196,11 +1231,12 @@ def summarize_results(results, warnings):
             )
         )
         if s.top_edge_cuts():
-            lines.append("  cuts reach the top edge at x = {} (no clamps there)".format(
-                ", ".join("{:.0f}".format(u) for u in s.top_edge_cuts())))
+            lines.append("  cuts reach the {} edge at x = {} (no clamps there)".format(
+                x_edge, ", ".join("{:.0f}".format(u) for u in s.top_edge_cuts())))
         if s.left_edge_cuts():
-            lines.append("  cuts reach the left edge at y = {} (no clamps there)".format(
-                ", ".join("{:.0f}".format(v) for v in s.left_edge_cuts())))
+            lines.append("  cuts reach the left edge {} mm from the origin at y = {} (no clamps there)".format(
+                ", ".join("{:.0f}".format(v) for v in s.left_edge_cuts()),
+                ", ".join("{:.0f}".format(-v if origin == ORIGIN_TOP_LEFT else v) for v in s.left_edge_cuts())))
         for name, ids in r.disabled_tabs:
             lines.append("  WARNING {}: tabs {} were disabled by CAM, check the cut".format(name, ids))
     if warnings:
@@ -1240,5 +1276,5 @@ def show_create_drawer_cam_dialog():
         return None
     remember_settings(settings)
     doc.recompute()
-    _message("Drawer CAM Job", "\n".join(summarize_results(results, warnings)))
+    _message("Drawer CAM Job", "\n".join(summarize_results(results, warnings, settings.origin)))
     return results
