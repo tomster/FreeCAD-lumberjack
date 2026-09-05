@@ -26,10 +26,19 @@ Geometry / coordinate system (drawer-Part local):
   (at the default bottom_v_offset of 0).
 
 All panel bodies are built as "centered slabs" (a centered rectangle sketched on a body
-datum plane, padded with Midplane so the slab is centered in its thickness) and then
+datum plane, padded symmetrically so the slab is centered in its thickness) and then
 positioned with expression-driven Body.Placement.Base, with no rotations. Grooves for the
-captured bottom are cut as ThroughAll pockets that run the full length of each wall; the
-bottom panel is rabbeted with a frame pocket so its tongue seats in those grooves.
+bottom are cut as ThroughAll pockets that run the full length of each wall.
+
+Bottom joint (decided live by the expression t_bottom < t_side):
+  - inserted (t_bottom < t_side): the bottom keeps its full thickness, the groove is
+    t_bottom wide and starts t_bottom above the box bottom (plus bottom_v_offset); the
+    bottom's rabbet pocket is suppressed.
+  - captured (t_bottom >= t_side): groove t_bottom / 2 wide starting t_bottom / 2 above
+    the box bottom, the bottom is rabbeted to a t_bottom / 2 tongue.
+
+The whole drawer Part is rotated 180 deg about Z so its front (the optional drawer front
+and the front wall) faces the FreeCAD "front" (-Y) view direction.
 """
 
 import FreeCAD
@@ -100,6 +109,130 @@ _KEY_TO_PROP = {
     "drawer_t_front": "t_front",
     "drawer_front_v_offset": "front_v_offset",
 }
+
+
+# =============================================================================
+# DRAWER DISCOVERY
+# =============================================================================
+
+PANEL_ROLES = ("SideL", "SideR", "Back", "Front", "Bottom", "DrawerFront")
+
+
+def _is_holder(obj):
+    if hasattr(obj, "Shape"):
+        return False
+    props = getattr(obj, "PropertiesList", [])
+    return all(p in props for p in ("width", "t_side", "t_bottom", "overlap_box"))
+
+
+def drawer_holder(part):
+    """Return the parameter holder of a drawer Part, or None."""
+    if getattr(part, "TypeId", "") != "App::Part":
+        return None
+    for child in part.Group:
+        if _is_holder(child):
+            return child
+    return None
+
+
+def find_drawer_part(obj):
+    """
+    Resolve any object (drawer Part, body, feature, or a generated CAM Job) to its drawer.
+
+    Returns (part, holder) or None.
+    """
+    if obj is None:
+        return None
+    if hasattr(obj, "LumberjackDrawer"):
+        part = obj.Document.getObject(obj.LumberjackDrawer)
+        holder = drawer_holder(part) if part else None
+        if holder:
+            return part, holder
+    queue = [obj]
+    seen = set()
+    while queue:
+        o = queue.pop(0)
+        if o.Name in seen:
+            continue
+        seen.add(o.Name)
+        holder = drawer_holder(o)
+        if holder:
+            return o, holder
+        queue.extend(o.InList)
+    return None
+
+
+def selected_drawers():
+    """
+    Resolve the current selection to drawers.
+
+    Returns (drawers, rejected): drawers is a list of (part, holder) without duplicates,
+    rejected the labels of selected objects that are not part of a drawer.
+    """
+    drawers = []
+    rejected = []
+    if not hasattr(FreeCADGui, "Selection"):
+        return drawers, rejected
+    seen = set()
+    for obj in FreeCADGui.Selection.getSelection():
+        found = find_drawer_part(obj)
+        if found is None:
+            rejected.append(obj.Label)
+            continue
+        part, holder = found
+        if part.Name not in seen:
+            seen.add(part.Name)
+            drawers.append((part, holder))
+    return drawers, rejected
+
+
+def drawer_panels(part):
+    """Return [(role, body)] for the panel bodies of a drawer, in PANEL_ROLES order."""
+    panels = []
+    for child in part.Group:
+        if child.TypeId != "PartDesign::Body":
+            continue
+        role = child.Name.rsplit("_", 1)[-1]
+        if role in PANEL_ROLES:
+            panels.append((role, child))
+    panels.sort(key=lambda rb: PANEL_ROLES.index(rb[0]))
+    return panels
+
+
+def _strip_outer_parens(expr):
+    """Remove one pair of enclosing parentheses if they wrap the whole expression."""
+    e = expr.strip()
+    if not (e.startswith("(") and e.endswith(")")):
+        return e
+    depth = 0
+    for i, ch in enumerate(e):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0 and i != len(e) - 1:
+                return e  # the first "(" closes before the end: not a wrapping pair
+    return e[1:-1].strip()
+
+
+def read_drawer_values(holder):
+    """
+    Read a drawer's parameters back as a values dict (see create_parameter_holder).
+
+    Expressions are returned as written (spreadsheet references survive); properties
+    without an expression are returned as "<value> mm".
+    """
+    exprs = dict(holder.ExpressionEngine)
+    values = {}
+    for prop in _HOLDER_LENGTH_PROPS:
+        expr = exprs.get(prop)
+        if expr:
+            values[prop] = _strip_outer_parens(expr)
+        else:
+            values[prop] = "{} mm".format(getattr(holder, prop).Value)
+    values["overlap_box"] = bool(holder.overlap_box)
+    values["has_front"] = bool(holder.has_front)
+    return values
 
 
 # =============================================================================
@@ -287,7 +420,7 @@ def _build_slab(doc, body, role, a_expr, b_expr, t_expr):
     pad.Profile = sketch
     body.addObject(pad)
     pad.Length = 10
-    pad.Midplane = True
+    pad.SideType = "Symmetric"
     pad.setExpression("Length", t_expr)
     sketch.Visibility = False
     doc.recompute()
@@ -318,7 +451,7 @@ def _cut_groove(doc, body, role, u0_expr, du_expr, v0_expr, dv_expr):
     pocket.Profile = sketch
     body.addObject(pocket)
     pocket.Type = "ThroughAll"
-    pocket.Midplane = True
+    pocket.SideType = "Symmetric"
     sketch.Visibility = False
     doc.recompute()
     return pocket
@@ -339,14 +472,18 @@ def _set_placement(body, x_expr=None, y_expr=None, z_expr=None):
 # =============================================================================
 
 
-def create_drawer(name, values):
+def create_drawer(name, values, container=None, placement=None, internal_name=None):
     """
     Create a parametric drawer (App::Part with panel bodies) in the active document.
 
     Args:
-        name: base name for the drawer Part and its bodies.
+        name: label for the drawer Part (and base for the body labels).
         values: dict of expression strings for the length parameters plus the
                 "overlap_box" and "has_front" booleans (see create_parameter_holder).
+        container: App::Part to add the drawer to; default is the active container.
+        placement: Placement for the drawer Part; default is the 180 deg Z rotation.
+        internal_name: internal object name to request (used when recreating a drawer
+                so that references by name, e.g. CAM Jobs, stay valid).
 
     Returns:
         The created App::Part, or None on failure.
@@ -356,10 +493,22 @@ def create_drawer(name, values):
         FreeCAD.Console.PrintError("Lumberjack: No active document.\n")
         return None
 
-    # --- Drawer Part, placed inside the active container ---------------------
-    part = doc.addObject("App::Part", name)
+    # --- Drawer Part, placed inside the (active) container --------------------
+    part = doc.addObject("App::Part", internal_name or name)
     part.Label = name
-    _add_part_to_active_container(part)
+    if container is not None:
+        container.addObject(part)
+    else:
+        _add_part_to_active_container(part)
+
+    # Rotate the whole drawer 180 deg about Z so the front faces the FreeCAD front
+    # (-Y) view. The rotation is about the Part origin, so the bottom stays centered
+    # in X/Y and its bottom face stays on z = 0.
+    if placement is None:
+        placement = FreeCAD.Placement(
+            FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1), 180
+        )
+    part.Placement = placement
 
     # Use the Part's actual (unique) internal name as the base for child names so
     # multiple drawers with the same requested name don't collide. Labels follow the
@@ -376,10 +525,26 @@ def create_drawer(name, values):
     has_front = bool(values.get("has_front", False))
 
     # --- Derived dimension expressions ---------------------------------------
-    side_len = "{ov} == 1 ? {d} : {d} - {ts}".format(
-        ov=H("overlap_box"), d=H("depth"), ts=H("t_side")
-    )
-    fb_len = H("width")
+    # Box corner joinery orientation:
+    #   - Without a dedicated front, keep the front/back panels full-width so the drawer
+    #     shows a clean, uniform front face; the sides lap into the front/back.
+    #   - With a dedicated front, rotate the joinery 90 deg about Z: the sides run the
+    #     full depth and the front/back lap into them. This puts the corner glue joints
+    #     in shear when the drawer front is pulled, giving a stronger bond against the
+    #     drawer being pulled out. The less tidy front-edge grain is hidden behind the
+    #     drawer front.
+    # overlap_box stays live-editable via the ternary: when set, all panels fully overlap
+    # (box-joint dimensioning); otherwise a half-lap (t_side inset) is applied.
+    if has_front:
+        side_len = H("depth")
+        fb_len = "{ov} == 1 ? {w} : {w} - {ts}".format(
+            ov=H("overlap_box"), w=H("width"), ts=H("t_side")
+        )
+    else:
+        side_len = "{ov} == 1 ? {d} : {d} - {ts}".format(
+            ov=H("overlap_box"), d=H("depth"), ts=H("t_side")
+        )
+        fb_len = H("width")
     height = H("height")
     t_side = H("t_side")
     t_bottom = H("t_bottom")
@@ -388,11 +553,19 @@ def create_drawer(name, values):
     cavity_x = "{w} - 2 * {ts}".format(w=H("width"), ts=H("t_side"))
     cavity_y = "{d} - 2 * {ts}".format(d=H("depth"), ts=H("t_side"))
     groove_depth = "{ts} / 2".format(ts=H("t_side"))
+    # Bottom joint, live-editable via the ternaries:
+    #   - t_bottom < t_side ("inserted" bottom): the bottom keeps its full thickness and
+    #     sits in a groove t_bottom wide that starts t_bottom above the box bottom. No
+    #     rabbet on the bottom, so no need for a bit narrower than t_bottom / 2, and a
+    #     stronger joint.
+    #   - otherwise ("captured" bottom): groove t_bottom / 2 wide starting t_bottom / 2
+    #     above the box bottom, the bottom is rabbeted to a t_bottom / 2 tongue.
+    inserted = "{tb} < {ts}".format(tb=H("t_bottom"), ts=H("t_side"))
+    groove_dv = "{ins} ? {tb} : {tb} / 2".format(ins=inserted, tb=H("t_bottom"))
     # Groove Z band in wall-local v (wall is centered in Z then placed at height/2).
-    groove_v0 = "{tb} / 2 + {off} - {h} / 2".format(
-        tb=H("t_bottom"), off=H("bottom_v_offset"), h=H("height")
+    groove_v0 = "({ins} ? {tb} : {tb} / 2) + {off} - {h} / 2".format(
+        ins=inserted, tb=H("t_bottom"), off=H("bottom_v_offset"), h=H("height")
     )
-    groove_dv = "{tb} / 2".format(tb=H("t_bottom"))
 
     half_w = "{w} / 2 - {ts} / 2".format(w=H("width"), ts=H("t_side"))
     half_d = "{d} / 2 - {ts} / 2".format(d=H("depth"), ts=H("t_side"))
@@ -438,9 +611,16 @@ def create_drawer(name, values):
     # --- Bottom panel (rabbeted, sits in the wall grooves) -------------------
     bottom = _create_body(doc, part, "{}_Bottom".format(base), "{}_Bottom".format(lbl))
     _build_slab(doc, bottom, "XY_Plane", bottom_x, bottom_y, t_bottom)
-    _rabbet_bottom(doc, bottom, bottom_x, bottom_y, cavity_x, cavity_y, t_bottom)
+    _rabbet_bottom(
+        doc, bottom, bottom_x, bottom_y, cavity_x, cavity_y, t_bottom,
+        suppress_expr="{ins} ? 1 : 0".format(ins=inserted),
+    )
+    # Captured: bottom face on z = offset. Inserted: raised by t_bottom (groove start).
     _set_placement(
-        bottom, z_expr="{off} + {tb} / 2".format(off=H("bottom_v_offset"), tb=H("t_bottom"))
+        bottom,
+        z_expr="{off} + {tb} / 2 + ({ins} ? {tb} : 0 mm)".format(
+            off=H("bottom_v_offset"), tb=H("t_bottom"), ins=inserted
+        ),
     )
 
     # --- Optional drawer front -----------------------------------------------
@@ -467,12 +647,15 @@ def create_drawer(name, values):
     return part
 
 
-def _rabbet_bottom(doc, body, bottom_x, bottom_y, cavity_x, cavity_y, t_bottom):
+def _rabbet_bottom(
+    doc, body, bottom_x, bottom_y, cavity_x, cavity_y, t_bottom, suppress_expr=None
+):
     """
     Cut a perimeter rabbet into the bottom so its tongue seats in the wall grooves.
 
     Removes the lower half (t_bottom/2) of the perimeter frame between the cavity
-    rectangle and the outer (tongue) rectangle.
+    rectangle and the outer (tongue) rectangle. If suppress_expr is given it drives the
+    pocket's Suppressed property (1 = no rabbet, used for the inserted bottom).
     """
     sketch = doc.addObject("Sketcher::SketchObject", "{}_RabbetSk".format(body.Name))
     body.addObject(sketch)
@@ -495,9 +678,93 @@ def _rabbet_bottom(doc, body, bottom_x, bottom_y, cavity_x, cavity_y, t_bottom):
     body.addObject(pocket)
     pocket.Length = 10
     pocket.setExpression("Length", "{} / 2".format(t_bottom))
+    if suppress_expr:
+        pocket.setExpression("Suppressed", suppress_expr)
     sketch.Visibility = False
     doc.recompute()
     return pocket
+
+
+# =============================================================================
+# RECREATION
+# =============================================================================
+
+
+def _parent_container(part):
+    """The App::Part (or other group) that directly contains part, or None."""
+    for parent in part.InList:
+        group = getattr(parent, "Group", None)
+        if group is not None and hasattr(parent, "addObject") and part in group:
+            if parent.TypeId not in ("App::Origin",):
+                return parent
+    return None
+
+
+def delete_drawer(part):
+    """Remove a drawer Part together with its holder, bodies and their features."""
+    doc = part.Document
+    names = []
+    for child in list(part.Group):
+        if child.TypeId == "PartDesign::Body":
+            names.extend(f.Name for f in child.Group)
+        names.append(child.Name)
+    names.append(part.Name)
+    for name in names:
+        if doc.getObject(name) is not None:
+            doc.removeObject(name)
+    doc.recompute()
+
+
+def recreate_drawer(part, name=None, values=None):
+    """
+    Rebuild an existing drawer with the current code.
+
+    Keeps the internal name, label (unless name is given), container and placement.
+    values defaults to the drawer's current parameters (expressions preserved).
+
+    Returns the new App::Part, or None on failure.
+    """
+    holder = drawer_holder(part)
+    if holder is None:
+        FreeCAD.Console.PrintError(
+            "Lumberjack: '{}' is not a Lumberjack drawer.\n".format(part.Label)
+        )
+        return None
+    if values is None:
+        values = read_drawer_values(holder)
+    label = name or part.Label
+    internal_name = part.Name
+    container = _parent_container(part)
+    placement = FreeCAD.Placement(part.Placement)
+    doc = part.Document
+
+    had_job = False
+    try:
+        import cam
+
+        had_job = cam.find_existing_job(doc, part) is not None
+    except Exception:
+        pass
+
+    delete_drawer(part)
+    new_part = create_drawer(
+        label, values, container=container, placement=placement, internal_name=internal_name
+    )
+    if new_part is None:
+        return None
+    if new_part.Name != internal_name:
+        FreeCAD.Console.PrintWarning(
+            "Lumberjack: recreated drawer got the new internal name '{}' (was '{}').\n".format(
+                new_part.Name, internal_name
+            )
+        )
+    if had_job:
+        FreeCAD.Console.PrintWarning(
+            "Lumberjack: drawer '{}' has a CAM Job; run 'Drawer CAM Job' again to rebuild "
+            "its models and operations.\n".format(label)
+        )
+    FreeCAD.Console.PrintMessage("Lumberjack: Recreated drawer '{}'.\n".format(label))
+    return new_part
 
 
 # =============================================================================
@@ -548,11 +815,20 @@ class DrawerTemplate:
 
 
 class CreateDrawerDialog(QtWidgets.QDialog):
-    """Dialog for creating a parametric drawer."""
+    """
+    Dialog for creating a parametric drawer.
 
-    def __init__(self, parent=None):
+    With existing=(part, holder) the dialog is seeded from that drawer and the accept
+    button recreates it (see recreate_drawer) instead of creating a new one.
+    """
+
+    def __init__(self, parent=None, existing=None):
         super(CreateDrawerDialog, self).__init__(parent)
-        self.setWindowTitle("Create Drawer")
+        self.existing = existing
+        self.existing_values = (
+            read_drawer_values(existing[1]) if existing is not None else None
+        )
+        self.setWindowTitle("Recreate Drawer" if existing else "Create Drawer")
         self.setMinimumWidth(420)
         self.template = None
         self.spin = {}  # holder-prop-name -> spinbox widget
@@ -572,10 +848,14 @@ class CreateDrawerDialog(QtWidgets.QDialog):
         obj.ViewObject.Proxy = 0
         self.template = obj
 
-        # Seed each length property from the remembered preference (or default).
+        # Seed each length property from the drawer being recreated, else from the
+        # remembered preference (or default).
         for key, _label, default in BOX_FIELDS + FRONT_FIELDS:
             prop = _KEY_TO_PROP[key]
-            expr = _get_last_str(key, default)
+            if self.existing_values is not None:
+                expr = self.existing_values[prop]
+            else:
+                expr = _get_last_str(key, default)
             try:
                 self.template.setExpression(prop, expr)
             except Exception:
@@ -621,16 +901,27 @@ class CreateDrawerDialog(QtWidgets.QDialog):
         name_label = QtWidgets.QLabel("Name:")
         name_label.setMinimumWidth(110)
         self.name_edit = QtWidgets.QLineEdit()
-        self.name_edit.setText(_get_last_str("drawer_name", "Drawer"))
+        if self.existing is not None:
+            self.name_edit.setText(self.existing[0].Label)
+        else:
+            self.name_edit.setText(_get_last_str("drawer_name", "Drawer"))
         self.name_edit.selectAll()
         name_row.addWidget(name_label)
         name_row.addWidget(self.name_edit)
         layout.addLayout(name_row)
 
         layout.addSpacing(8)
-        info = QtWidgets.QLabel(
-            "Enter values or expressions (e.g. p.width). Sizes are in mm."
-        )
+        if self.existing is not None:
+            info = QtWidgets.QLabel(
+                "Recreating '{}': the Part and its bodies are deleted and rebuilt with "
+                "the current code, keeping name, container and placement. Objects that "
+                "reference the old bodies (e.g. a CAM Job) must be regenerated "
+                "afterwards.".format(self.existing[0].Label)
+            )
+        else:
+            info = QtWidgets.QLabel(
+                "Enter values or expressions (e.g. p.width). Sizes are in mm."
+            )
         info.setWordWrap(True)
         layout.addWidget(info)
         layout.addSpacing(4)
@@ -652,12 +943,18 @@ class CreateDrawerDialog(QtWidgets.QDialog):
             self.overlap_check = QtWidgets.QCheckBox(
                 "Box joints (overlapping panels) instead of half-lap dados"
             )
-            self.overlap_check.setChecked(_get_last_bool("drawer_overlap_box", False))
+            if self.existing_values is not None:
+                self.overlap_check.setChecked(self.existing_values["overlap_box"])
+            else:
+                self.overlap_check.setChecked(_get_last_bool("drawer_overlap_box", False))
             layout.addWidget(self.overlap_check)
 
             # has_front checkbox
             self.front_check = QtWidgets.QCheckBox("Add a dedicated drawer front")
-            self.front_check.setChecked(_get_last_bool("drawer_has_front", False))
+            if self.existing_values is not None:
+                self.front_check.setChecked(self.existing_values["has_front"])
+            else:
+                self.front_check.setChecked(_get_last_bool("drawer_has_front", False))
             layout.addWidget(self.front_check)
 
             self.front_group = QtWidgets.QGroupBox("Drawer front")
@@ -671,7 +968,9 @@ class CreateDrawerDialog(QtWidgets.QDialog):
 
         layout.addSpacing(12)
         button_row = QtWidgets.QHBoxLayout()
-        self.create_button = QtWidgets.QPushButton("Create")
+        self.create_button = QtWidgets.QPushButton(
+            "Recreate" if self.existing is not None else "Create"
+        )
         self.create_button.setDefault(True)
         self.create_button.setEnabled(self.template is not None)
         self.cancel_button = QtWidgets.QPushButton("Cancel")
@@ -720,7 +1019,12 @@ class CreateDrawerDialog(QtWidgets.QDialog):
 
 
 def show_create_drawer_dialog():
-    """Show the Create Drawer dialog and create the drawer if confirmed."""
+    """
+    Show the Create Drawer dialog and create the drawer if confirmed.
+
+    If exactly one existing drawer is selected, the dialog is seeded from it and the
+    drawer is recreated (same name, container and placement) instead.
+    """
     doc = FreeCAD.ActiveDocument
     if doc is None:
         FreeCAD.Console.PrintError(
@@ -728,7 +1032,17 @@ def show_create_drawer_dialog():
         )
         return None
 
-    dialog = CreateDrawerDialog(FreeCADGui.getMainWindow())
+    existing = None
+    try:
+        drawers, rejected = selected_drawers()
+        if len(drawers) == 1 and not rejected:
+            existing = drawers[0]
+    except Exception as e:
+        FreeCAD.Console.PrintWarning(
+            "Lumberjack: could not inspect the selection: {}\n".format(e)
+        )
+
+    dialog = CreateDrawerDialog(FreeCADGui.getMainWindow(), existing=existing)
     if dialog.exec_() != QtWidgets.QDialog.Accepted:
         return None
 
@@ -751,6 +1065,10 @@ def show_create_drawer_dialog():
     if not ok:
         FreeCAD.Console.PrintError("Lumberjack: {}\n".format(problem))
         return None
+
+    if existing is not None:
+        # Recreating does not touch the remembered "last used" values.
+        return recreate_drawer(existing[0], name=name, values=values)
 
     # Remember all fields for next time (only once the values are known good).
     _set_last_str("drawer_name", name)
@@ -789,12 +1107,15 @@ def _validate_values(values):
         h = probe.height.Value
         ts = probe.t_side.Value
         tb = probe.t_bottom.Value
+        off = probe.bottom_v_offset.Value
+        # Inserted bottom (tb < ts): groove top is at offset + 2 * tb; captured: offset + tb.
+        groove_top = off + (2 * tb if tb < ts else tb)
         checks = [
             (ts > 0, "side thickness must be > 0"),
             (tb > 0, "bottom thickness must be > 0"),
             (w > 2 * ts, "width must be greater than 2 x side thickness"),
             (d > 2 * ts, "depth must be greater than 2 x side thickness"),
-            (h > tb, "height must be greater than bottom thickness"),
+            (h > groove_top, "height must be greater than the top of the bottom groove"),
         ]
         for ok, msg in checks:
             if not ok:

@@ -72,7 +72,20 @@ faces of the side, front, and back panels ("captured-bottom drawer"), and the bo
 carries a matching perimeter rabbet so its upper-half tongue seats into the grooves.
 
 **Coordinate system:** The bottom panel is centered on the Part origin in X (width) and Y
-(depth); its bottom face is at `z = 0` (at the default `bottom_v_offset` of 0).
+(depth); its bottom face is at `z = 0` (at the default `bottom_v_offset` of 0). The whole
+drawer Part is rotated 180° about Z so its front faces the FreeCAD "front" (−Y) view.
+
+**Box joinery orientation:** When **Box joints** is off (half-lap dados) the joinery
+orientation depends on whether a drawer front is requested:
+
+- *No drawer front:* the front/back panels run full width and the sides lap into them, so
+  the drawer shows a clean, uniform front face.
+- *With a drawer front:* the joinery is rotated 90° about Z — the sides run the full depth
+  and the front/back lap into them. This puts the corner glue joints in shear when the
+  drawer front is pulled, giving a stronger bond against the drawer being pulled out. The
+  less tidy front-edge grain this exposes is hidden behind the drawer front.
+
+When **Box joints** is on, all box panels are dimensioned to fully overlap regardless.
 
 **Parameters / data model:** Every parameter is stored as an editable, expression-capable
 property. Because FreeCAD raises a cyclic-reference error when a child body references its
@@ -88,6 +101,56 @@ the drawer (e.g. `Drawer_SideL`, `Drawer_Bottom`) and is picked up by the cutlis
   invocations, to streamline creating several similar drawers in a row.
 - `has_front` is applied at creation time: toggling it later on the holder will not add or
   remove the drawer-front body.
+
+**Recreate**: with exactly one existing drawer selected (the Part or anything inside
+it), *Create Drawer* opens pre-filled with that drawer's expressions and rebuilds it with
+the current code under the same name, container and placement. Use this after updates to
+`drawers.py`. Objects referencing the old bodies must be regenerated (a CAM Job: run
+*Drawer CAM Job* again). Recreating does not change the remembered "last used" values.
+
+**Bottom joint** (live, decided by `t_bottom < t_side`): a bottom thinner than the sides is
+*inserted* at full thickness into a groove `t_bottom` wide that starts `t_bottom` above the
+box bottom (no rabbet on the bottom). A bottom at least as thick as the sides is *captured*:
+groove `t_bottom / 2` wide starting `t_bottom / 2` up, bottom rabbeted to a `t_bottom / 2`
+tongue. `bottom_v_offset` raises the groove in both cases.
+
+### Drawer CAM Job Command
+
+Generates a FreeCAD CAM Job with operations, hold-down tabs and G-code for drawers made
+with *Create Drawer*. Select one or more drawers (the drawer Part or anything inside it)
+and run **Drawer CAM Job** (toolbar, pie menu key `G`).
+
+The dialog asks for (all values are remembered):
+
+- **Tool bit** from the CAM toolbit library (`~/.local/share/FreeCAD/v1-1/CamAssets`).
+  A single bit is used for everything; it must not be wider than the bottom groove
+  (`t_bottom` for an inserted bottom, `t_bottom / 2` for a captured one) or the rabbets,
+  otherwise the command refuses with an explanation.
+- **Spindle speed, XY feed, plunge feed, step down**.
+- **Bed size X/Y**: every panel (plus stock margin) must fit in either orientation.
+- **Post processor** (default `uccnc`) and whether to **write the G-code now**.
+
+What is generated, per drawer, in one Job labelled `CAM <Drawer>`:
+
+- One model clone per panel, laid flat with the pocketed face up and the top face at
+  Z = 0, all panels in a row along X. The stock is a box around all panels
+  (margin = tool diameter + 5 mm), Z from the thickest panel to 0.
+- **Slot passes** for the bottom groove of the four walls, the half-lap end rabbets of
+  the full-length walls (not with `overlap_box`) and, for a captured bottom only, the
+  four rabbet strips of the bottom. Passes overlap by 50 % of the tool diameter and
+  overshoot open ends.
+- One **outside Profile** per panel (through cut, 0.2 mm into the spoilboard) with a
+  **Tags** dress-up: 2 tabs per edge, 10 mm wide, 3 mm high.
+- G-code at `<document folder>/<Document>_<Drawer>.nc` (also set as the Job output).
+
+Re-running the command on a drawer that already has a Job keeps the panel layout and
+regenerates stock, operations, tabs and G-code from the current placements. Use this
+after arranging the panels manually in the Job (all operations are recomputed from the
+model placements, so moving a panel without re-running leaves stale toolpaths).
+
+Half-lap joinery is not modelled in the drawer bodies; the CAM code synthesises it:
+the full-length panels (Front/Back, or SideL/SideR when a drawer front exists) get a
+rabbet `t_side` wide x `t_side / 2` deep on their inner face at both ends.
 
 ### Sync Aliases Command
 
@@ -162,6 +225,18 @@ The drawer is created as a `Std_Part` containing the panel bodies. All dimension
 editable on the parameter holder inside the Part (and can reference spreadsheet cells), and
 every panel body is exposed to the cutlist generator.
 
+### Generating drawer G-code
+
+1. Select a drawer (or several) in the tree
+2. Run **Drawer CAM Job** (`q,q` then `G`, or the toolbar)
+3. Pick the tool bit and check bed size, feeds and post processor
+4. Inspect the Job in the CAM workbench (simulator works per operation)
+5. Optionally move the panels on the stock, then run the command again to regenerate
+6. The `.nc` file sits next to the document
+
+Headless tests: `test_cam.py` (console) and `test_cam_gui.py` (offscreen GUI), see the
+docstrings for the command lines.
+
 ## Parameter Naming Rules
 
 Parameter names must be valid Python identifiers:
@@ -183,6 +258,11 @@ Lumberjack/
 ├── InitGui.py        # Runs at GUI start, registers workbench and commands
 ├── project.py        # Project setup and spreadsheet creation
 ├── panels.py         # Panel creation dialog and logic
+├── drawers.py        # Parametric drawer (Std_Part with panel bodies) and dialog
+├── cam.py            # Drawer CAM Job generation (operations, tabs, G-code)
+├── reload.py         # Development helpers: hot-reload modules, smoke tests
+├── test_cam.py       # Headless end-to-end test for cam.py
+├── test_cam_gui.py   # Offscreen GUI smoke test for cam.py
 └── README.md         # This file
 ```
 
@@ -251,6 +331,7 @@ Planned features:
 - [ ] Panel edge banding options
 - [ ] Grain direction indicators
 - [ ] Cutlist generation integration
+- [ ] Drawer CAM: nest panels by thickness, second bit for the through cut, configurable tabs
 - [ ] Material database
 - [ ] Hardware library (hinges, slides, etc.)
 - [ ] Assembly helpers

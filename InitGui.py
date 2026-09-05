@@ -137,6 +137,7 @@ def _install_global_toolbar_late():
             _add_cmd("Lumberjack_NewPartContainer", "New Part")
             _add_cmd("Lumberjack_CreatePanel", "Create Panel")
             _add_cmd("Lumberjack_CreateDrawer", "Create Drawer")
+            _add_cmd("Lumberjack_CreateDrawerCam", "Drawer CAM")
             _add_cmd("Lumberjack_TransformPart", "Transform")
             tb.addSeparator()
             _add_cmd("Lumberjack_NewProject", "New Project")
@@ -426,7 +427,10 @@ class CreateDrawerCommand:
     def GetResources(self):
         return {
             "MenuText": "Create Drawer",
-            "ToolTip": "Create a new parametric drawer (Std_Part with PartDesign panel bodies)",
+            "ToolTip": (
+                "Create a new parametric drawer (Std_Part with PartDesign panel bodies). "
+                "With a drawer selected: recreate it with the current code and parameters"
+            ),
             "Pixmap": "PartDesign_Body",
         }
 
@@ -438,6 +442,37 @@ class CreateDrawerCommand:
         import drawers
 
         drawers.show_create_drawer_dialog()
+
+
+class CreateDrawerCamCommand:
+    """Command to create (or regenerate) the CAM Job of the selected drawers."""
+
+    def GetResources(self):
+        return {
+            "MenuText": "Drawer CAM Job",
+            "ToolTip": (
+                "Create a CAM Job with operations, tabs and G-code for the selected "
+                "drawers (re-run to regenerate after arranging the panels)"
+            ),
+            "Pixmap": "CAM_Job",
+        }
+
+    def IsActive(self):
+        if FreeCAD.ActiveDocument is None:
+            return False
+        try:
+            import cam
+
+            drawers, rejected = cam.selected_drawers()
+            return bool(drawers) and not rejected
+        except Exception:
+            return False
+
+    def Activated(self):
+        """Execute the command."""
+        import cam
+
+        cam.show_create_drawer_cam_dialog()
 
 
 class NewPartContainerCommand:
@@ -662,6 +697,7 @@ class QuickMenuCommand:
             ("Lumberjack_NewPartContainer", "New Part"),
             ("Lumberjack_CreatePanel", "Create Panel"),
             ("Lumberjack_CreateDrawer", "Create Drawer"),
+            ("Lumberjack_CreateDrawerCam", "Drawer CAM"),
             ("Lumberjack_SyncAliases", "Sync Aliases"),
             ("Lumberjack_TransformPart", "Transform"),
         ]
@@ -749,6 +785,8 @@ class QuickMenuCommand:
                         hint = " (P)"
                     elif cmd_name == "Lumberjack_CreateDrawer":
                         hint = " (D)"
+                    elif cmd_name == "Lumberjack_CreateDrawerCam":
+                        hint = " (G)"
                     elif cmd_name == "Lumberjack_TransformPart":
                         hint = " (⏎)"
                     b.setText(label + hint)
@@ -804,6 +842,8 @@ class QuickMenuCommand:
                     # Single-key shortcuts while the pie menu is open:
                     #  - n: New Part Container
                     #  - p: Create Panel
+                    #  - d: Create Drawer
+                    #  - g: Drawer CAM Job
                     #  - Enter: Transform Part
                     if k == "n":
                         self.close()
@@ -818,6 +858,11 @@ class QuickMenuCommand:
                     if k == "d":
                         self.close()
                         FreeCADGui.runCommand("Lumberjack_CreateDrawer")
+                        ev.accept()
+                        return
+                    if k == "g":
+                        self.close()
+                        FreeCADGui.runCommand("Lumberjack_CreateDrawerCam")
                         ev.accept()
                         return
                     if ev.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
@@ -901,6 +946,7 @@ FreeCADGui.addCommand("Lumberjack_NewProject", NewProjectCommand())
 FreeCADGui.addCommand("Lumberjack_SyncAliases", SyncAliasesCommand())
 FreeCADGui.addCommand("Lumberjack_CreatePanel", CreatePanelCommand())
 FreeCADGui.addCommand("Lumberjack_CreateDrawer", CreateDrawerCommand())
+FreeCADGui.addCommand("Lumberjack_CreateDrawerCam", CreateDrawerCamCommand())
 FreeCADGui.addCommand("Lumberjack_NewPartContainer", NewPartContainerCommand())
 FreeCADGui.addCommand("Lumberjack_TransformPart", TransformPartCommand())
 FreeCADGui.addCommand("Lumberjack_QuickMenu", QuickMenuCommand())
@@ -958,6 +1004,7 @@ static char * lumberjack_xpm[] = {
                 "Lumberjack_NewPartContainer",
                 "Lumberjack_CreatePanel",
                 "Lumberjack_CreateDrawer",
+                "Lumberjack_CreateDrawerCam",
                 "Lumberjack_TransformPart",
                 "Separator",
                 "Lumberjack_NewProject",
@@ -972,6 +1019,7 @@ static char * lumberjack_xpm[] = {
                 "Lumberjack_NewPartContainer",
                 "Lumberjack_CreatePanel",
                 "Lumberjack_CreateDrawer",
+                "Lumberjack_CreateDrawerCam",
                 "Lumberjack_TransformPart",
                 "Separator",
                 "Lumberjack_NewProject",
