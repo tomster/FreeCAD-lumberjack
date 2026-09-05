@@ -149,8 +149,12 @@ where `<name>` describes the selected drawers compactly (`naming.py`): shared na
 are factored out and numbered series are collapsed, e.g. `Kitchen_Left_Top`,
 `Kitchen_Left_Bottom`, `Kitchen_Right_Top` become `CAM Kitchen Left Bottom/Top, Right Top`,
 and `Drawer001` .. `Drawer003` become `CAM Drawer 001-003`. Selecting the container selects
-all its drawers for the command. Per sheet one Job labelled `<t>mm sheet <n>` (plus the
-drawer names when the sheet holds only some of the container's drawers):
+all its drawers for the command. Per sheet one Job labelled `Job <t>mm sheet <n>` (plus
+the drawer names when the sheet holds only some of the container's drawers), each inside
+its own sheet frame (`App::Part` labelled `<t>mm sheet <n>`). The frames are displayed
+side by side along X, one sheet width plus a 10 % gap apart, so the sheets do not overlap
+in the 3D view; the first sheet sits at the origin. Only the display is shifted: every
+Job, its stock and operations keep machine coordinates and the G-code is unaffected.
 
 - **Coordinates**: zero is the chosen sheet corner, X to the right, Z = 0 on the sheet
   surface; Y is negative (top-left origin) or positive (bottom-left origin). Cut a blank

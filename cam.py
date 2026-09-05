@@ -73,6 +73,7 @@ ORIGINS = (ORIGIN_TOP_LEFT, ORIGIN_BOTTOM_LEFT)
 CLAMP_CLEARANCE_EXTRA = 2.0
 PASS_OVERLAP = 0.5  # step-over between parallel slot passes as fraction of tool diameter
 PASS_EXTENSION_EXTRA = 1.0  # mm beyond the tool radius that open-ended passes overshoot
+JOB_GAP_FRACTION = 0.10  # gap between Jobs displayed side by side, as fraction of the sheet width
 RAPID_DEFAULT = "1200 mm/min"
 
 PREF_PREFIX = "cam_"
@@ -512,12 +513,57 @@ def find_cam_groups(doc, part_names):
     ]
 
 
-def cam_group_of(job):
-    """The Lumberjack CAM container holding the Job, or None."""
-    for parent in job.InList:
-        if hasattr(parent, CAM_GROUP_PROP) and job in (getattr(parent, "Group", []) or []):
+SHEET_FRAME_PROP = "LumberjackSheetFrame"
+
+
+def _holding_groups(obj):
+    """Groups whose Group list contains obj."""
+    return [
+        parent
+        for parent in obj.InList
+        if hasattr(parent, "Group") and obj in (parent.Group or [])
+    ]
+
+
+def sheet_frame_of(job):
+    """The per-sheet App::Part that offsets the Job's display, or None."""
+    for parent in _holding_groups(job):
+        if hasattr(parent, SHEET_FRAME_PROP):
             return parent
     return None
+
+
+def cam_group_of(job):
+    """The Lumberjack CAM container holding the Job (directly or via its sheet frame)."""
+    queue = list(_holding_groups(job))
+    seen = set()
+    while queue:
+        parent = queue.pop(0)
+        if parent.Name in seen:
+            continue
+        seen.add(parent.Name)
+        if hasattr(parent, CAM_GROUP_PROP):
+            return parent
+        queue.extend(_holding_groups(parent))
+    return None
+
+
+def _create_sheet_frame(doc, container, label, x_offset):
+    """
+    An App::Part inside the container that shows one Job shifted along X.
+
+    Only the display moves: the Job, its stock and operations keep machine coordinates,
+    so the G-code is unaffected.
+    """
+    frame = doc.addObject("App::Part", "Sheet")
+    frame.Label = label
+    frame.addProperty(
+        "App::PropertyBool", SHEET_FRAME_PROP, "Lumberjack", "Display frame of one sheet Job"
+    )
+    setattr(frame, SHEET_FRAME_PROP, True)
+    frame.Placement = FreeCAD.Placement(FreeCAD.Vector(x_offset, 0, 0), FreeCAD.Rotation())
+    container.addObject(frame)
+    return frame
 
 
 def cam_group_name(drawers):
@@ -545,6 +591,9 @@ def _create_cam_group(doc, drawers):
 
 def _remove_cam_group_if_empty(container):
     doc = container.Document
+    for child in list(container.Group):  # sheet frames whose Job is gone
+        if hasattr(child, SHEET_FRAME_PROP) and not list(child.Group):
+            doc.removeObject(child.Name)
     if list(container.Group):
         return False
     doc.removeObject(container.Name)
@@ -556,6 +605,7 @@ def delete_job(job):
     import Path.Base.Util as PathUtil
 
     doc = job.Document
+    frame = sheet_frame_of(job)
     # Operations first, including dress-up bases (which are not in the Operations group
     # and would otherwise survive the Job's own teardown with dangling expressions).
     try:
@@ -593,6 +643,8 @@ def delete_job(job):
             except Exception:
                 pass
     doc.removeObject(job.Name)
+    if frame is not None and not list(frame.Group):
+        doc.removeObject(frame.Name)
     doc.recompute()
 
 
@@ -942,21 +994,28 @@ class SheetJobResult:
         self.disabled_tabs = []
         self.gcode_files = []
         self.container = None
+        self.frame = None
 
     @property
     def drawers(self):
         return sorted({p.item.data.part.Label for p in self.sheet.items})
 
 
-def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir, container):
-    """Create one CAM Job for one nested sheet inside the run's container."""
+def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir, container, x_offset=0.0):
+    """
+    Create one CAM Job for one nested sheet inside the run's container.
+
+    The Job lives in its own sheet frame (App::Part) displayed x_offset to the right, so
+    several sheets do not overlap in the 3D view while all keep machine coordinates.
+    """
     refs = {p.item.key: p.item.data for p in sheet.items}
     bodies = [p.item.data.body for p in sheet.items]
     drawer_names = sorted({r.part.Name for r in refs.values()})
     label = "{:g}mm sheet {}".format(thickness, sheet_no)
     if set(drawer_names) != set(container.LumberjackDrawers):  # only some of the drawers
         label += " ({})".format(", ".join(sorted({r.part.Label for r in refs.values()})))
-    job = _create_job(doc, bodies, label)
+    sheet_frame = _create_sheet_frame(doc, container, label, x_offset)
+    job = _create_job(doc, bodies, "Job " + label)
     job.LumberjackDrawers = drawer_names
     job.LumberjackThickness = float(thickness)
     job.LumberjackSheet = int(sheet_no)
@@ -968,6 +1027,7 @@ def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir, containe
     _configure_job(job, settings, out_path)
     result = SheetJobResult(job, thickness, sheet)
     result.container = container
+    result.frame = sheet_frame
 
     # Place every model clone where the nest put its panel.
     clones = {}
@@ -1028,10 +1088,10 @@ def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir, containe
             result.disabled_tabs.append((name, list(tags.Disabled)))
     doc.recompute()
 
-    # Move the Job into the container only now: App::Part.addObject pulls the whole tree
-    # of local links (stock, tools, operations, dress-ups, clones) along, but objects
-    # created later would stay outside and trip the link-scope check.
-    container.addObject(job)
+    # Move the Job into its frame only now: App::Part.addObject pulls the whole tree of
+    # local links (stock, tools, operations, dress-ups, clones) along, but objects created
+    # later would stay outside and trip the link-scope check.
+    sheet_frame.addObject(job)
     doc.recompute()
 
     if settings.write_gcode:
@@ -1118,10 +1178,14 @@ def run(drawers, settings):
 
     out_dir = output_dir(doc)
     results = []
+    pitch = settings.sheet_w * (1.0 + JOB_GAP_FRACTION)  # sheets side by side in the view
     for thickness, sheets in nested:
         for sheet in sheets:
             results.append(
-                build_sheet_job(doc, sheet, thickness, sheet.index + 1, settings, out_dir, container)
+                build_sheet_job(
+                    doc, sheet, thickness, sheet.index + 1, settings, out_dir, container,
+                    x_offset=len(results) * pitch,
+                )
             )
     doc.recompute()
     return results, problems, warnings
@@ -1340,7 +1404,10 @@ def summarize_results(results, warnings, origin=ORIGIN_TOP_LEFT):
         if r.container is not None and r.container not in containers:
             containers.append(r.container)
     for c in containers:
-        lines.append("Jobs collected in '{}'".format(c.Label))
+        lines.append(
+            "Jobs collected in '{}' (sheets shown side by side, {:.0f} % apart; "
+            "G-code coordinates are unaffected)".format(c.Label, JOB_GAP_FRACTION * 100)
+        )
     for r in results:
         s = r.sheet
         lines.append(

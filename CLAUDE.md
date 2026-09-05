@@ -60,7 +60,9 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   `find_drawer_part`. Jobs carry `LumberjackDrawers`, `LumberjackThickness`,
   `LumberjackSheet`; the `App::Part` container of a run carries `LumberjackCamGroup`
   and `LumberjackDrawers` (so selecting it resolves to its drawers). Jobs are told apart
-  from containers by having `Operations`.
+  from containers by having `Operations`. Each Job sits in a sheet frame (`App::Part`
+  with `LumberjackSheetFrame`) whose Placement offsets the display along X
+  (`JOB_GAP_FRACTION`); never move Job objects themselves, that would change the G-code.
 - A container is reused only when its drawer set equals the run's (keeps user renames);
   otherwise emptied containers are removed and a new one is named via `naming.group_name`.
 - CAM layout frame: `u` right, `v` away from the reference edge; mapped to Job XY by
@@ -84,7 +86,8 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
 - `App::Part.addObject(job)` pulls the Job's whole tree of *local* links (stock, tools,
   ops, dress-ups, clones) into the container; objects created afterwards stay outside and
   trip the link-scope check ("Link(s) ... go out of the allowed scope"). Add the Job to
-  the container last. Global links (Draft clone `Objects`) may cross containers.
+  the container last. Global links (Draft clone `Objects`) may cross containers. Adding
+  a nested `App::Part` does not extract its children (nested groups keep their own tree).
 - Inside a container, `obj.InList` includes the container itself; use `cam._users_of`
   instead of `not obj.InList` when deciding whether a tool bit is still referenced.
 - FreeCAD reuses freed internal names (`Job`, `CamJobs`); never identify old objects by

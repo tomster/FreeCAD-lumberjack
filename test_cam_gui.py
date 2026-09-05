@@ -101,10 +101,13 @@ def main():
     container = res.container
     check(container is not None and container.TypeId == "App::Part", "jobs collected in an App::Part")
     check(container.Label == "CAM Schublade", "container label: {}".format(container.Label))
-    check(all(r.job in container.Group for r in results), "all jobs in the container")
+    check(all(r.frame in container.Group and r.job in r.frame.Group for r in results), "all jobs in sheet frames in the container")
     check(container.ViewObject is not None and container.ViewObject.Visibility, "container visible")
-    check(not any(o.isDerivedFrom("App::DocumentObject") and getattr(o, "State", None) and "Invalid" in o.State for o in container.Group),
-          "no invalid objects in the container (link scope)")
+    xs = sorted(r.frame.Placement.Base.x for r in results)
+    check(xs[0] == 0 and abs(xs[1] - s.sheet_w * 1.1) < 1e-6, "second sheet shown one sheet width plus 10 % to the right: {}".format(xs))
+    everything = [o for r in results for o in r.frame.Group] + list(container.Group)
+    check(not any("Invalid" in o.State for o in everything), "no invalid objects in the container (link scope)")
+    check(all(r.frame.ViewObject is not None and r.frame.ViewObject.Visibility for r in results), "frames visible")
     FreeCADGui.Selection.clearSelection()
     FreeCADGui.Selection.addSelection(doc.Name, container.Name)
     d3, rej3 = cam.selected_drawers()
