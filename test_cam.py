@@ -1,18 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Headless end-to-end test for cam.py.
+Headless end-to-end test for cam.py / nesting.py.
 
 Run:
     ~/Applications/FreeCAD.AppImage --console \
         --module-path ~/Projects/FreeCAD/Mod/Lumberjack \
         ~/Projects/FreeCAD/Mod/Lumberjack/test_cam.py
 
-Creates a drawer, generates its CAM Job with a bit from the CAM library, post-processes
-it and checks the result. Then moves one panel and regenerates to verify that the
-operations follow the new placement.
+Creates drawers, nests them onto sheets, generates the CAM Jobs with a bit from the CAM
+library, post-processes and checks the result, then recreates a drawer and re-runs.
 """
 
-import math
 import os
 import shutil
 import sys
@@ -21,7 +19,7 @@ import traceback
 import FreeCAD
 
 OUT_DIR = "/tmp/lj_cam"
-BIT_MAX_D = 4.0  # groove = t_bottom / 2 = 4 mm with t_bottom = 8 mm
+BIT_MAX_D = 4.0  # groove = t_bottom = 8 mm (inserted bottom) needs <= 8, rabbets 6 mm need <= 6
 
 
 def check(cond, msg):
@@ -52,306 +50,247 @@ def min_z_in_gcode(path):
     return zmin
 
 
-def main():
-    import cam
-    import drawers
+def xy_range_in_gcode(path):
+    xs, ys = [], []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("(") or line.startswith("%"):
+                continue
+            for tok in line.split():
+                try:
+                    if tok.startswith("X"):
+                        xs.append(float(tok[1:]))
+                    elif tok.startswith("Y"):
+                        ys.append(float(tok[1:]))
+                except ValueError:
+                    pass
+    return (min(xs), max(xs), min(ys), max(ys)) if xs and ys else None
 
-    if os.path.isdir(OUT_DIR):
-        shutil.rmtree(OUT_DIR)
-    os.makedirs(OUT_DIR)
 
-    doc = FreeCAD.newDocument("LjCamTest")
-    doc.saveAs(os.path.join(OUT_DIR, "test.FCStd"))
+DRAWER_A = {
+    "width": "400 mm", "height": "120 mm", "depth": "500 mm",
+    "t_side": "12 mm", "t_bottom": "8 mm", "bottom_v_offset": "0 mm",
+    "width_front": "440 mm", "height_front": "160 mm", "t_front": "18 mm",
+    "front_v_offset": "20 mm", "overlap_box": False, "has_front": True,
+}
+DRAWER_C = {  # captured bottom (t_bottom == t_side), no drawer front
+    "width": "300 mm", "height": "100 mm", "depth": "400 mm",
+    "t_side": "12 mm", "t_bottom": "12 mm", "bottom_v_offset": "0 mm",
+    "width_front": "340 mm", "height_front": "140 mm", "t_front": "18 mm",
+    "front_v_offset": "20 mm", "overlap_box": False, "has_front": False,
+}
 
-    part = drawers.create_drawer(
-        "Drawer",
-        {
-            "width": "400 mm",
-            "height": "120 mm",
-            "depth": "500 mm",
-            "t_side": "12 mm",
-            "t_bottom": "8 mm",
-            "bottom_v_offset": "0 mm",
-            "width_front": "440 mm",
-            "height_front": "160 mm",
-            "t_front": "18 mm",
-            "front_v_offset": "20 mm",
-            "overlap_box": False,
-            "has_front": True,
-        },
-    )
-    check(part is not None, "drawer created")
-    holder = cam.drawer_holder(part)
-    check(holder is not None, "holder found")
-    check(cam.find_drawer_part(part.Group[1]) == (part, holder), "body resolves to drawer")
 
-    # --- drawer model: inserted bottom (t_bottom 8 < t_side 12) -----------------
-    bodies = {b.Name.rsplit("_", 1)[-1]: b for b in part.Group if b.TypeId == "PartDesign::Body"}
-    bot = bodies["Bottom"]
-    check(abs(bot.Shape.Volume - 388.0 * 488.0 * 8.0) < 1e-3, "inserted bottom keeps its full thickness (no rabbet)")
-    check(abs(bot.Shape.BoundBox.ZMin - 8.0) < 1e-6, "inserted bottom sits 8 mm up (groove start)")
-    side = bodies["SideL"]
-    check(abs(side.Shape.Volume - (500.0 * 120.0 * 12.0 - 500.0 * 6.0 * 8.0)) < 1e-3, "side groove is 8 wide x 6 deep")
-    gz = [f.BoundBox.ZMin for f in side.Shape.Faces if abs(f.normalAt(0, 0).z) > 0.99 and 7 < f.BoundBox.ZMin < 17]
-    check(any(abs(z - 8.0) < 1e-6 for z in gz) and any(abs(z - 16.0) < 1e-6 for z in gz), "groove band is z 8..16 ({})".format(sorted(set(round(z, 3) for z in gz))))
-    # live toggle: making the bottom as thick as the sides switches to the captured joint
-    holder.setExpression("t_bottom", None)
-    holder.t_bottom = "12 mm"
-    doc.recompute()
-    check(bot.Shape.Volume < 388.0 * 488.0 * 12.0 - 1.0, "captured bottom (12 == 12) gets the rabbet back")
-    check(abs(bot.Shape.BoundBox.ZMin) < 1e-6, "captured bottom sits on z = 0")
-    holder.t_bottom = "8 mm"
-    doc.recompute()
-    check(abs(bot.Shape.Volume - 388.0 * 488.0 * 8.0) < 1e-3, "back to inserted after resetting t_bottom")
-
-    bit = pick_bit(cam)
-    FreeCAD.Console.PrintMessage("  using bit {} (d={})\n".format(bit.label, bit.diameter))
-
-    s = cam.CamSettings()
-    s.bit_id = bit.bit_id
-    s.bit_label = bit.label
-    s.tool_d = bit.diameter
-    s.cutting_edge_height = bit.edge_height
-    s.bed_x, s.bed_y = 1200.0, 800.0
-    posts = cam.available_post_processors()
-    s.post = "uccnc" if "uccnc" in posts else posts[0]
-    s.spindle, s.feed_xy, s.feed_z, s.step_down = 16000.0, 360.0, 360.0, 3.0
-    s.write_gcode = True
-
-    # --- pure geometry -----------------------------------------------------
+def test_geometry(cam, nesting):
     r = cam.Region("x", 0, 100, 0, 3, 1, "u")
     check(len(cam.slot_passes(r, 3.0)) == 1, "w == d gives one pass")
     check(len(cam.slot_passes(r, 1.5)) == 3, "w == 2d gives 3 passes (50% step-over)")
-    r6 = cam.Region("x", 0, 100, 0, 6, 1, "u")
-    check(len(cam.slot_passes(r6, 3.0)) == 3, "w == 2d (6/3) gives 3 passes")
     try:
         cam.slot_passes(r, 3.5)
         raise AssertionError("ToolTooWide not raised")
     except cam.ToolTooWide:
         FreeCAD.Console.PrintMessage("  ok: ToolTooWide raised\n")
-    pos = cam.tab_positions([(0, 0), (100, 0), (100, 50), (0, 50)], 2.0)
-    check(len(pos) == 8, "8 tab positions")
-    check(all(abs(y + 2.0) < 1e-9 for x, y in pos[0:2]), "bottom-edge tabs offset outward")
 
-    # --- validation ---------------------------------------------------------
+    # nesting: the standard drawer's 12 mm panels on a 630 x 1080 sheet with a 6 mm bit
+    items = [nesting.Item(k, l, w, 12) for k, l, w in
+             (("SideL", 500, 120), ("SideR", 500, 120), ("Front", 388, 120), ("Back", 388, 120))]
+    sheets = nesting.nest(items, 630, 1080, 6.0)
+    check(len(sheets) == 1, "four walls fit one sheet")
+    sh = sheets[0]
+    by = {p.item.key: p for p in sh.items}
+    check(all(p.rotated for p in sh.items), "walls stand vertically (long side along the sheet height)")
+    check(by["SideL"].u0 == 0 and by["SideL"].v0 == 0, "first panel hugs the top-left corner")
+    check(abs(by["SideR"].v0 - (500 + 6)) < 1e-9, "stacked panels are one tool diameter apart")
+    check(abs(by["Front"].u0 - (120 + 6)) < 1e-9, "second column is one tool diameter to the right")
+    check(sh.used_w <= 630 and sh.used_h <= 1080, "layout within the sheet")
+    vlines = [l for l in sh.lines if l.axis == "v"]
+    hlines = [l for l in sh.lines if l.axis == "h"]
+    check(len(vlines) == 2, "two vertical cuts (shared column line + right edge)")
+    check(abs(vlines[0].pos - 123) < 1e-9 and len(vlines[0].edges) == 4, "shared column cut serves 4 edges")
+    check(all(l.pos > 0 for l in hlines), "no cut along the top edge")
+    check(all(l.pos > 0 for l in vlines), "no cut along the left edge")
+    check(all(l.tabs for l in sh.lines), "every cut has tabs")
+    check(sh.top_edge_cuts() == [123.0, 249.0], "top-edge cut positions reported")
+    try:
+        nesting.nest([nesting.Item("big", 1200, 700, 12)], 630, 1080, 6.0)
+        raise AssertionError("DoesNotFit not raised")
+    except nesting.DoesNotFit:
+        FreeCAD.Console.PrintMessage("  ok: DoesNotFit raised\n")
+    many = [nesting.Item("p%d" % i, 1000, 200, 12) for i in range(4)]
+    check(len(nesting.nest(many, 630, 1080, 6.0)) == 2, "overflow opens a second sheet")
+    sheets = nesting.nest([nesting.Item("long", 900, 200, 12)], 630, 1080, 6.0)
+    check(sheets[0].items[0].rotated, "panel longer than the sheet width is rotated")
+
+
+def main():
+    import cam
+    import drawers
+    import nesting
+
+    if os.path.isdir(OUT_DIR):
+        shutil.rmtree(OUT_DIR)
+    os.makedirs(OUT_DIR)
+    doc = FreeCAD.newDocument("LjCamTest")
+    doc.saveAs(os.path.join(OUT_DIR, "test.FCStd"))
+
+    test_geometry(cam, nesting)
+
+    part = drawers.create_drawer("Drawer", DRAWER_A)
+    holder = cam.drawer_holder(part)
+    check(holder is not None, "drawer created")
+    check(cam.find_drawer_part(part.Group[1]) == (part, holder), "body resolves to drawer")
+
+    # --- drawer model: inserted bottom (8 < 12) ------------------------------------
+    bodies = {b.Name.rsplit("_", 1)[-1]: b for b in part.Group if b.TypeId == "PartDesign::Body"}
+    bot = bodies["Bottom"]
+    check(abs(bot.Shape.Volume - 388.0 * 488.0 * 8.0) < 1e-3, "inserted bottom keeps its full thickness")
+    check(abs(bot.Shape.BoundBox.ZMin - 8.0) < 1e-6, "inserted bottom sits 8 mm up")
+    holder.setExpression("t_bottom", None)
+    holder.t_bottom = "12 mm"
+    doc.recompute()
+    check(bot.Shape.Volume < 388.0 * 488.0 * 12.0 - 1.0, "captured bottom (12 == 12) gets the rabbet")
+    holder.t_bottom = "8 mm"
+    doc.recompute()
+    check(abs(bot.Shape.Volume - 388.0 * 488.0 * 8.0) < 1e-3, "back to inserted after resetting")
+
+    bit = pick_bit(cam)
+    d = bit.diameter
+    FreeCAD.Console.PrintMessage("  using bit {} (d={})\n".format(bit.label, d))
+    s = cam.CamSettings()
+    s.bit_id, s.bit_label, s.tool_d, s.cutting_edge_height = bit.bit_id, bit.label, d, bit.edge_height
+    s.sheet_w, s.sheet_h, s.clamp_h = 630.0, 1080.0, 20.0
+    posts = cam.available_post_processors()
+    s.post = "uccnc" if "uccnc" in posts else posts[0]
+    s.spindle, s.feed_xy, s.feed_z, s.step_down = 16000.0, 360.0, 360.0, 3.0
+    s.write_gcode = True
+
+    # --- validation -----------------------------------------------------------------
     params = cam.DrawerParams(holder)
     problems, warnings = cam.validate_drawer(part, params, s)
     check(not problems, "no validation problems: {}".format(problems))
     bad = cam.CamSettings()
     bad.__dict__.update(s.__dict__)
-    bad.tool_d = 6.0
-    problems, _ = cam.validate_drawer(part, params, bad)
-    check(not problems, "6 mm bit is fine for the 8 mm groove of an inserted bottom")
     bad.tool_d = 9.0
     problems, _ = cam.validate_drawer(part, params, bad)
     check(any("Groove" in p for p in problems), "9 mm bit is rejected for an 8 mm groove")
-    bad.tool_d = s.tool_d
-    bad.bed_x, bad.bed_y = 300.0, 300.0
+    bad.tool_d = d
+    bad.sheet_w, bad.sheet_h = 300.0, 300.0
     problems, _ = cam.validate_drawer(part, params, bad)
-    check(problems, "small bed is rejected")
+    check(problems, "small sheet is rejected")
 
-    # --- job ------------------------------------------------------------------
-    results, problems, warnings = cam.run([(part, holder)], s)
-    check(not problems, "run succeeded")
-    res = results[0]
-    job = res.job
-    check(res.created, "job created")
-    check(job.LumberjackDrawer == part.Name, "job tagged with drawer")
-    clones = job.Model.Group
-    check(len(clones) == 6, "6 model clones ({})".format(len(clones)))
-    for c in clones:
-        check(abs(c.Shape.BoundBox.ZMax) < 1e-6, "{} top at Z=0".format(c.Label))
-    xs = sorted((c.Shape.BoundBox.XMin, c.Shape.BoundBox.XMax) for c in clones)
-    for (a0, a1), (b0, b1) in zip(xs, xs[1:]):
-        check(b0 > a1, "panels do not overlap in X")
-    # groove of SideL: 4 mm wide, one pass with a <= 4 mm bit... count slots:
-    d = s.tool_d
-    def npass(w):
-        return len(cam.slot_passes(cam.Region("r", 0, 10, 0, w, 1, "u"), d))
-    # inserted bottom (8 < 12): groove 8 mm wide, no bottom rabbet strips
-    expected_slots = 4 * npass(8.0) + 2 * 2 * npass(12.0)
-    check(res.slots == expected_slots, "slot count {} == {}".format(res.slots, expected_slots))
-    check(res.profiles == 6, "6 profiles")
-    ops = job.Operations.Group
-    tags = [o for o in ops if o.Name.endswith("Tags") or "Tags" in o.Label]
-    check(len(tags) == 6, "6 tag dress-ups in the operations group ({})".format(len(tags)))
-    profiles_in_group = [o for o in ops if o.Label.endswith("_Profile")]
-    check(not profiles_in_group, "base profiles removed from the operations group")
-    check(not res.disabled_tabs, "no tabs disabled: {}".format(res.disabled_tabs))
-    for t in tags:
-        check(len(t.Positions) == 8, "{} has 8 tabs".format(t.Label))
-    check(len(job.Tools.Group) == 1, "exactly one tool controller")
-    tc = job.Tools.Group[0]
-    check(abs(float(tc.Tool.Diameter) - d) < 1e-6, "tool controller diameter matches")
-    stock = job.Stock
-    sb = stock.Shape.BoundBox
-    check(abs(sb.ZMax) < 1e-6 and sb.ZMin < -17.9, "stock spans from -18 to 0 ({:.2f}..{:.2f})".format(sb.ZMin, sb.ZMax))
-
-    # --- geometry of the generated operations ---------------------------------
-    def clone_of(role):
-        return [c for c in clones if c.Label.endswith("_" + role)][0]
-
-    def ops_starting(prefix):
-        return [o for o in job.Proxy.allOperations() if o.Label.startswith(prefix)]
-
-    ts, tb = 12.0, 8.0
-    for role in ("SideL", "SideR", "Back", "Front"):
-        c = clone_of(role)
-        bb = c.Shape.BoundBox
-        check(abs(bb.ZMin + ts) < 1e-6, "{} is {} thick when flat".format(role, ts))
-        check(abs(bb.YLength - 120.0) < 1e-6, "{} height runs along Y".format(role))
-        grooves = ops_starting(role + "_Groove")
-        check(len(grooves) >= 1, "{} has a groove".format(role))
-        for g in grooves:
-            y = g.CustomPoint1.y
-            check(abs(g.CustomPoint1.y - g.CustomPoint2.y) < 1e-9, "{} groove pass runs along X".format(role))
-            check(bb.YMin + tb + d / 2 - 1e-6 <= y <= bb.YMin + 2 * tb - d / 2 + 1e-6,
-                  "{} groove pass at {:.2f} lies in the band {:.1f}..{:.1f} above the bottom edge".format(
-                      role, y - bb.YMin, tb, 2 * tb))
-            check(g.CustomPoint1.x < bb.XMin and g.CustomPoint2.x > bb.XMax or
-                  g.CustomPoint2.x < bb.XMin and g.CustomPoint1.x > bb.XMax,
-                  "{} groove overshoots both ends".format(role))
-            check(abs(g.FinalDepth.Value + ts / 2) < 1e-6 and abs(g.StartDepth.Value) < 1e-6,
-                  "{} groove depth is t_side/2".format(role))
-        rabbets = ops_starting(role + "_RabbetEnd")
-        if role in ("SideL", "SideR"):
-            check(rabbets, "{} (full length with drawer front) has end rabbets".format(role))
-            for r_ in rabbets:
-                x = r_.CustomPoint1.x
-                check(abs(r_.CustomPoint1.x - r_.CustomPoint2.x) < 1e-9, "rabbet pass runs along Y")
-                inside_end = (bb.XMax - ts + d / 2 - 1e-6 <= x <= bb.XMax - d / 2 + 1e-6) or (
-                    bb.XMin + d / 2 - 1e-6 <= x <= bb.XMin + ts - d / 2 + 1e-6)
-                check(inside_end, "{} rabbet pass at x={:.2f} is within {} mm of an end".format(role, x, ts))
-                check(min(r_.CustomPoint1.y, r_.CustomPoint2.y) < bb.YMin and
-                      max(r_.CustomPoint1.y, r_.CustomPoint2.y) > bb.YMax, "rabbet overshoots top and bottom")
-        else:
-            check(not rabbets, "{} (short panel) has no end rabbets".format(role))
-    c = clone_of("Bottom")
-    bb = c.Shape.BoundBox
-    check(abs(bb.ZMin + tb) < 1e-6, "Bottom is 8 thick when flat")
-    check(abs(bb.XLength - 488.0) < 1e-6 and abs(bb.YLength - 388.0) < 1e-6, "Bottom is 488 x 388 with length along X")
-    check(not ops_starting("Bottom_Rabbet"), "inserted bottom has no rabbet passes")
-    for r_ in ops_starting("Bottom_Rabbet"):
-        p1, p2 = r_.CustomPoint1, r_.CustomPoint2
-        if abs(p1.y - p2.y) < 1e-9:  # pass along X
-            near = min(abs(p1.y - bb.YMin), abs(bb.YMax - p1.y))
-        else:
-            near = min(abs(p1.x - bb.XMin), abs(bb.XMax - p1.x))
-        check(d / 2 - 1e-6 <= near <= ts / 2 - d / 2 + 1e-6, "{} runs within the 6 mm rim (at {:.2f})".format(r_.Label, near))
-        check(abs(r_.FinalDepth.Value + tb / 2) < 1e-6, "bottom rabbet depth is t_bottom/2")
-    for role, t in (("SideL", ts), ("Bottom", tb), ("DrawerFront", 18.0)):
-        prof = ops_starting(role + "_Profile")[0]
-        check(abs(prof.FinalDepth.Value + t + 0.2) < 1e-6, "{} profile cuts to -{}".format(role, t + 0.2))
-    df = clone_of("DrawerFront")
-    check(abs(df.Shape.BoundBox.XLength - 440.0) < 1e-6, "DrawerFront width along X")
-
-    check(res.gcode_files, "gcode written")
-    gpath = res.gcode_files[0]
-    check(os.path.exists(gpath) and os.path.getsize(gpath) > 1000, "gcode file {} non-empty".format(gpath))
-    text = open(gpath).read()
-    check("G1" in text, "gcode has G1 moves")
-    zmin = min_z_in_gcode(gpath)
-    check(abs(zmin - (-(18.0 + 0.2))) < 1e-3, "deepest Z {} == -18.2 (drawer front)".format(zmin))
-    check(job.PostProcessorOutputFile == gpath, "job output file set")
-
-    # --- captured bottom drawer (t_bottom == t_side), no drawer front --------------
-    part_c = drawers.create_drawer(
-        "Captured",
-        {
-            "width": "300 mm", "height": "100 mm", "depth": "400 mm",
-            "t_side": "12 mm", "t_bottom": "12 mm", "bottom_v_offset": "0 mm",
-            "width_front": "340 mm", "height_front": "140 mm", "t_front": "18 mm",
-            "front_v_offset": "20 mm", "overlap_box": False, "has_front": False,
-        },
-    )
+    # --- second drawer, nested together ---------------------------------------------
+    part_c = drawers.create_drawer("Captured", DRAWER_C)
     holder_c = cam.drawer_holder(part_c)
-    bot_c = [b for b in part_c.Group if b.Name.endswith("_Bottom")][0]
-    check(bot_c.Shape.Volume < 288.0 * 388.0 * 12.0 - 1.0, "captured bottom is rabbeted")
-    results_c, problems_c, _ = cam.run([(part_c, holder_c)], s)
-    check(not problems_c, "captured drawer job ok: {}".format(problems_c))
-    job_c = results_c[0].job
-    check(job_c != job, "separate job for the second drawer")
-    ops_c = job_c.Proxy.allOperations()
-    check(len([o for o in ops_c if o.Label.startswith("Bottom_Rabbet")]) == 4 * npass(6.0), "captured bottom has 4 rabbet strips")
-    check(all(o.Label.startswith(("Front", "Back")) for o in ops_c if "RabbetEnd" in o.Label) and
-          any("RabbetEnd" in o.Label for o in ops_c), "Front/Back get the end rabbets without a drawer front")
-    sl = [c for c in job_c.Model.Group if c.Label.endswith("SideL")][0]
-    bbc = sl.Shape.BoundBox
-    for g in [o for o in ops_c if o.Label.startswith("SideL_Groove")]:
-        y = g.CustomPoint1.y - bbc.YMin
-        check(6.0 + d / 2 - 1e-6 <= y <= 12.0 - d / 2 + 1e-6, "captured groove band 6..12 (pass at {:.2f})".format(y))
-    check(results_c[0].gcode_files and os.path.exists(results_c[0].gcode_files[0]), "captured drawer gcode written")
+    results, problems, warnings = cam.run([(part, holder), (part_c, holder_c)], s)
+    check(not problems, "run succeeded: {}".format(problems))
+    by_t = {}
+    for r in results:
+        by_t.setdefault(r.thickness, []).append(r)
+    check(sorted(by_t) == [8.0, 12.0, 18.0], "one thickness group per panel thickness: {}".format(sorted(by_t)))
+    check(all(len(v) == 1 for v in by_t.values()), "each thickness fits one sheet")
+    r12 = by_t[12.0][0]
+    job = r12.job
+    check(len(job.Model.Group) == 9, "12 mm sheet holds 4 + 5 panels ({})".format(len(job.Model.Group)))
+    check(sorted(job.LumberjackDrawers) == sorted([part.Name, part_c.Name]), "job records both drawers")
+    check(len(job.Tools.Group) == 1 and abs(float(job.Tools.Group[0].Tool.Diameter) - d) < 1e-6, "one tool controller")
+    sb = job.Stock.Shape.BoundBox
+    check(abs(sb.XMin) < 1e-6 and abs(sb.XMax - 630) < 1e-6 and abs(sb.YMax) < 1e-6 and abs(sb.YMin + 1080) < 1e-6
+          and abs(sb.ZMax) < 1e-6 and abs(sb.ZMin + 12) < 1e-6, "stock is the whole sheet with the top-left corner at the origin")
+    sheet = r12.sheet
+    for placed in sheet.items:
+        clone = [c for c in job.Model.Group if c.Objects and c.Objects[0].Name == placed.item.data.body.Name][0]
+        bb = clone.Shape.BoundBox
+        check(abs(bb.XMin - placed.u0) < 1e-6 and abs(bb.YMax + placed.v0) < 1e-6, "{} placed at its nested position".format(clone.Label))
+        check(abs(bb.XLength - placed.du) < 1e-6 and abs(bb.YLength - placed.dv) < 1e-6, "{} orientation matches the nest".format(clone.Label))
+        check(abs(bb.ZMax) < 1e-6 and abs(bb.ZMin + 12) < 1e-6, "{} top at Z=0".format(clone.Label))
+        check(bb.XMax <= 630 - d and bb.YMin >= -1080 + d, "{} within the sheet with clearance".format(clone.Label))
+    check([p for p in sheet.items if p.v0 == 0] and [p for p in sheet.items if p.u0 == 0],
+          "panels flush with the top and left edges")
+    ops = job.Proxy.allOperations()
+    is_dressup = lambda o: hasattr(o, "Base") and not isinstance(o.Base, list) and o.Base is not None
+    tags = [o for o in ops if is_dressup(o)]
+    cuts = [o for o in ops if o.Name.startswith("Cut12mm_1_") and not is_dressup(o)]
+    check(len(cuts) == len(sheet.lines) == r12.cut_slots, "one Slot per cut line ({})".format(len(cuts)))
+    check(len(tags) == len([l for l in sheet.lines if l.tabs]), "one Tags dress-up per cut with tabs")
+    check(not r12.disabled_tabs, "no tabs disabled: {}".format(r12.disabled_tabs))
+    check(all(t.Base in cuts for t in tags), "every dress-up wraps a cut of this sheet")
+    check(not any(t.Base in job.Operations.Group for t in tags), "dressed cuts are not in the operations group twice")
+    cuts.sort(key=lambda o: int(o.Name[len("Cut12mm_1_"):-1]))
+    for line, op in zip(sheet.lines, cuts):
+        p1, p2 = op.CustomPoint1, op.CustomPoint2
+        if line.axis == "h":
+            check(abs(p1.y + line.pos) < 1e-6 and abs(p2.y + line.pos) < 1e-6, "{} at y = -{}".format(op.Label, line.pos))
+        else:
+            check(abs(p1.x - line.pos) < 1e-6 and abs(p2.x - line.pos) < 1e-6, "{} at x = {}".format(op.Label, line.pos))
+        check(abs(op.FinalDepth.Value + 12.2) < 1e-6, "{} cuts through (-12.2)".format(op.Label))
+    # groove pockets follow the nested placement: SideL of the first drawer
+    side_clone = [c for c in job.Model.Group if c.Label.endswith("Drawer_SideL")][0]
+    sbb = side_clone.Shape.BoundBox
+    grooves = [o for o in ops if o.Label.startswith("Drawer_SideL_Groove")]
+    check(grooves, "SideL has groove passes")
+    placed_side = [p for p in sheet.items if p.item.key == (part.Name, "SideL")][0]
+    for g in grooves:
+        if placed_side.rotated:
+            check(abs(g.CustomPoint1.x - g.CustomPoint2.x) < 1e-9, "rotated SideL groove runs along Y")
+            dist = sbb.XMax - g.CustomPoint1.x  # groove side away from the left edge
+            check(8 + d / 2 - 1e-6 <= dist <= 16 - d / 2 + 1e-6, "groove band 8..16 from the right edge ({:.2f})".format(dist))
+        else:
+            check(abs(g.CustomPoint1.y - g.CustomPoint2.y) < 1e-9, "SideL groove runs along X")
+            dist = g.CustomPoint1.y - sbb.YMin
+            check(8 + d / 2 - 1e-6 <= dist <= 16 - d / 2 + 1e-6, "groove band 8..16 above the bottom edge ({:.2f})".format(dist))
+        check(abs(g.FinalDepth.Value + 6) < 1e-6, "groove depth 6")
+    check([o for o in ops if o.Label.startswith("Captured_Bottom_Rabbet")], "captured bottom has rabbet passes")
+    check(not [o for o in ops if o.Label.startswith("Drawer_Bottom_Rabbet")], "inserted bottom has none")
+    check(any("_Front_RabbetEnd" in o.Label or "_Back_RabbetEnd" in o.Label for o in ops if o.Label.startswith("Captured_")),
+          "captured drawer (no front) rabbets its Front/Back")
+    check(any("_SideL_RabbetEnd" in o.Label for o in ops if o.Label.startswith("Drawer_")), "drawer with front rabbets its sides")
+    check(abs(job.SetupSheet.ClearanceHeightOffset.Value - 22) < 1e-6, "clearance offset = clamp height + 2")
 
-    # --- recreate the drawer (as after a drawers.py update) -----------------------
-    cont = doc.addObject("App::Part", "Cabinet")
-    old_pl = FreeCAD.Placement(FreeCAD.Vector(100, 200, 300), FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), 90))
-    part_r = drawers.create_drawer("Recreated", {
-        "width": "300 mm", "height": "100 mm", "depth": "400 mm",
-        "t_side": "12 mm", "t_bottom": "8 mm", "bottom_v_offset": "0 mm",
-        "width_front": "340 mm", "height_front": "140 mm", "t_front": "18 mm",
-        "front_v_offset": "20 mm", "overlap_box": False, "has_front": True,
-    }, container=cont, placement=old_pl)
-    holder_r = cam.drawer_holder(part_r)
-    doc.addObject("Spreadsheet::Sheet", "Sheet")
-    doc.Sheet.set("A1", "=320 mm")
-    doc.Sheet.setAlias("A1", "Cabinet_Width")
-    holder_r.setExpression("width", "Sheet.Cabinet_Width")
-    doc.recompute()
-    vals = drawers.read_drawer_values(holder_r)
-    check(vals["width"] == "Sheet.Cabinet_Width", "expression read back verbatim ({})".format(vals["width"]))
-    check(vals["t_side"] in ("12 mm", "12.0 mm"), "plain value read back ({})".format(vals["t_side"]))
-    check(vals["has_front"] is True and vals["overlap_box"] is False, "booleans read back")
-    res_r0 = cam.run([(part_r, holder_r)], s)[0][0]
-    job_r = res_r0.job
-    old_name = part_r.Name
-    n_before = len(doc.Objects)
-    new_part = drawers.recreate_drawer(part_r)
-    check(new_part is not None and new_part.Name == old_name, "recreated drawer keeps its internal name")
-    check(new_part.Label == "Recreated", "label kept")
-    check(new_part in cont.Group, "still inside the container")
-    check(new_part.Placement.isSame(old_pl, 1e-9), "placement kept")
-    check(len(doc.Objects) == n_before, "no leaked objects ({} -> {})".format(n_before, len(doc.Objects)))
+    # --- G-code ---------------------------------------------------------------------
+    check(r12.gcode_files, "gcode written")
+    g = r12.gcode_files[0]
+    check(os.path.basename(g) == "test_CAM_12mm_1.nc", "gcode name {}".format(os.path.basename(g)))
+    text = open(g).read()
+    check("G1" in text and "M6" in text, "gcode has moves and a tool change")
+    check(abs(min_z_in_gcode(g) + 12.2) < 1e-3, "deepest Z is -12.2")
+    xr = xy_range_in_gcode(g)
+    check(xr[0] >= -d and xr[1] <= 630 and xr[3] <= d and xr[2] >= -1080, "XY within the sheet: {}".format(xr))
+    check("Z22" in text, "rapids at clamp clearance Z=22")
+    r8 = by_t[8.0][0]
+    check(abs(min_z_in_gcode(r8.gcode_files[0]) + 8.2) < 1e-3, "8 mm sheet cuts to -8.2")
+
+    # --- re-run replaces the jobs without leaking -----------------------------------
+    n_after = len(doc.Objects)
+    results2, problems, _ = cam.run([(part, holder), (part_c, holder_c)], s)
+    check(not problems, "re-run ok")
+    check(len(doc.Objects) == n_after, "re-run replaces jobs without leaking objects ({} -> {})".format(n_after, len(doc.Objects)))
+    check(len(cam.find_lumberjack_jobs(doc, [part.Name])) == 3, "three jobs involve the first drawer")
+    results3, problems, warn3 = cam.run([(part_c, holder_c)], s)
+    check(not problems, "single drawer run ok")
+    check(any("also re-nested" in w for w in warn3), "sharing drawer is pulled into the run and reported")
+    check(sorted(r.thickness for r in results3) == [8.0, 12.0, 18.0], "shared drawers are re-nested together")
+    check(len(cam.find_lumberjack_jobs(doc, [part.Name])) == 3, "the other drawer keeps full job coverage")
+    check(len(doc.Objects) == n_after, "still no leaked objects")
+
+    # --- recreate a drawer and re-run --------------------------------------------------
+    cam.run([(part, holder)], s)
+    old_name = part.Name
+    n_jobs = len(cam.find_lumberjack_jobs(doc, [old_name]))
+    new_part = drawers.recreate_drawer(part)
+    check(new_part is not None and new_part.Name == old_name, "recreated drawer keeps its name")
     new_holder = cam.drawer_holder(new_part)
-    check(dict(new_holder.ExpressionEngine).get("width") in ("Sheet.Cabinet_Width", "(Sheet.Cabinet_Width)"),
-          "spreadsheet expression survives recreation")
-    check(abs(new_holder.width.Value - 320.0) < 1e-6, "expression evaluates after recreation")
-    check(len(cam.drawer_panels(new_part)) == 6, "6 panels after recreation")
-    res_r = cam.run([(new_part, new_holder)], s)[0][0]
-    check(res_r.job == job_r and not res_r.created, "CAM job re-attached to the recreated drawer")
-    check(len(job_r.Model.Group) == 6 and all(c.Objects and c.Objects[0].Document for c in job_r.Model.Group),
-          "job models rebuilt from the new bodies")
-    check(res_r.gcode_files, "gcode after recreation")
-
-    # --- regenerate after moving a panel ---------------------------------------
-    side = [c for c in clones if c.Label.endswith("SideL")][0]
-    groove_before = [o for o in ops if o.Label.startswith("SideL_Groove")][0].CustomPoint1.x
-    pl = side.Placement
-    pl.Base = pl.Base + FreeCAD.Vector(50, 0, 0)
-    side.Placement = pl
-    doc.recompute()
-    results2, problems, _ = cam.run([(part, holder)], s)
-    check(not problems, "regeneration succeeded")
-    res2 = results2[0]
-    check(res2.job == job, "same job reused")
-    check(not res2.created, "job not recreated")
-    side2 = [c for c in job.Model.Group if c.Label.endswith("SideL")][0]
-    check(side2 == side, "clone kept")
-    check(abs(side2.Placement.Base.x - pl.Base.x) < 1e-9, "manual placement kept")
-    groove_after = [o for o in job.Operations.Group if o.Label.startswith("SideL_Groove")][0].CustomPoint1.x
-    check(abs((groove_after - groove_before) - 50.0) < 1e-6, "groove followed the panel (+50)")
-    check(len(job.Tools.Group) == 1, "still one tool controller")
-    check(len(job.Model.Group) == 6, "still 6 clones")
-    check(len([o for o in doc.Objects if o.TypeId == "Path::FeaturePython" and o.Name.startswith("Stock")]) <= 1, "old stock removed")
+    results4, problems, _ = cam.run([(new_part, new_holder)], s)
+    check(not problems and len(results4) == n_jobs, "jobs rebuilt after recreation")
+    check(all(r.gcode_files for r in results4), "gcode after recreation")
 
     doc.save()
     FreeCAD.Console.PrintMessage("ALL CHECKS PASSED\n")
 
 
-if __name__ == "__main__" or True:
-    try:
-        main()
-    except Exception:
-        traceback.print_exc()
-        FreeCAD.Console.PrintError("TEST FAILED\n")
-        sys.exit(1)
-    sys.exit(0)
+try:
+    main()
+except Exception:
+    traceback.print_exc()
+    FreeCAD.Console.PrintError("TEST FAILED\n")
+    sys.exit(1)
+sys.exit(0)

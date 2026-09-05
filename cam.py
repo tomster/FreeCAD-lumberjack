@@ -11,20 +11,21 @@ Workflow
 2. Run "Drawer CAM Job". A dialog asks for the tool bit (from the CAM toolbit library),
    the machine bed size, the post processor and the cutting parameters. All values are
    remembered between invocations.
-3. One CAM Job per drawer is created. Every panel body becomes a model in the Job, laid
-   flat with its pocketed face up and its top face at Z = 0, all panels in a row along X.
+3. The panels of all selected drawers are nested per thickness on sheets (nesting.py):
+   panels hug the sheet's top-left corner, neighbours are one tool diameter apart so a
+   single cut separates both. One CAM Job per sheet: the models are the panel bodies laid
+   flat (pocketed face up, top face at Z = 0), the stock is the whole sheet with its
+   top-left corner at the origin (X to the right, Y negative towards the operator).
    Operations: Slot passes for the bottom groove, the half-lap rabbets and the bottom's
-   perimeter rabbet; an outside Profile per panel with a Tags dress-up (2 tabs per edge).
-   Finally the Job is post-processed to <docdir>/<Doc>_<Drawer>.nc.
-4. Arrange the panels manually in the Job if needed and run the command again on the
-   drawer: the layout is kept, the stock, operations, tabs and G-code are regenerated
-   from the current placements.
+   perimeter rabbet; one Slot per merged cut line with a Tags dress-up. Finally each Job
+   is post-processed to <docdir>/<Doc>_CAM_<t>mm_<n>.nc.
+4. Running the command again re-nests and replaces the Jobs of the selected drawers.
 
 Geometry
 --------
 All pockets are computed in the *body-local* frame of each panel (each body is a slab
 centered on its own origin, see drawers.py) and mapped into job coordinates through the
-model clone's Placement. That is what makes the regeneration follow manual moves.
+model clone's Placement, which is derived from the nest.
 The half-lap rabbets are not modelled in the drawer bodies; they are synthesised here:
 the full-length panels (Front/Back without a drawer front, SideL/SideR with one) get a
 rabbet t_side wide x t_side/2 deep on their inner face at both ends. No rabbets are cut
@@ -45,6 +46,7 @@ except ImportError:  # pragma: no cover - headless without Gui module
     FreeCADGui = None
 
 import drawers as _drawers
+import nesting
 from drawers import _get_last_bool, _get_last_str, _set_last_bool, _set_last_str
 
 Vector = FreeCAD.Vector
@@ -58,11 +60,12 @@ ROLES = _drawers.PANEL_ROLES
 WALL_ROLES = ("SideL", "SideR", "Back", "Front")
 
 THROUGH_OVERCUT = 0.2  # mm cut past the panel bottom on through cuts
-TAB_WIDTH = 10.0  # mm
+TAB_WIDTH = nesting.TAB_WIDTH  # mm
 TAB_HEIGHT = 3.0  # mm (capped at half the panel thickness)
-TABS_PER_EDGE = 2
-TAB_FRACTIONS = (1.0 / 3.0, 2.0 / 3.0)
-STOCK_MARGIN_EXTRA = 5.0  # mm added to the tool diameter for the stock margin
+DEFAULT_SHEET_W = 630.0  # mm, machine work area X
+DEFAULT_SHEET_H = 1080.0  # mm, machine work area Y
+DEFAULT_CLAMP_H = 20.0  # mm, rapids clear this plus CLAMP_CLEARANCE_EXTRA
+CLAMP_CLEARANCE_EXTRA = 2.0
 PASS_OVERLAP = 0.5  # step-over between parallel slot passes as fraction of tool diameter
 PASS_EXTENSION_EXTRA = 1.0  # mm beyond the tool radius that open-ended passes overshoot
 RAPID_DEFAULT = "1200 mm/min"
@@ -299,43 +302,6 @@ def slot_passes(region, tool_d):
     return passes
 
 
-def tab_positions(corners, tool_r):
-    """
-    Tab centers on the compensated toolpath for a convex polygon given as [(x, y)].
-
-    TABS_PER_EDGE tabs per edge at TAB_FRACTIONS along the edge, pushed outward by the
-    tool radius so they sit on the outside profile path.
-    """
-    n = len(corners)
-    cx = sum(c[0] for c in corners) / n
-    cy = sum(c[1] for c in corners) / n
-    positions = []
-    for i in range(n):
-        x0, y0 = corners[i]
-        x1, y1 = corners[(i + 1) % n]
-        ex, ey = x1 - x0, y1 - y0
-        length = math.hypot(ex, ey)
-        if length < 1e-9:
-            continue
-        nx, ny = ey / length, -ex / length  # a perpendicular
-        mx, my = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-        if (mx - cx) * nx + (my - cy) * ny < 0:
-            nx, ny = -nx, -ny  # make it point away from the centroid
-        for f in TAB_FRACTIONS:
-            positions.append((x0 + f * ex + nx * tool_r, y0 + f * ey + ny * tool_r))
-    return positions
-
-
-def footprint_fits(L, W, margin, bed_x, bed_y):
-    """True if a panel plus stock margin fits the bed in either orientation."""
-    l, w = L + 2 * margin, W + 2 * margin
-    return (l <= bed_x and w <= bed_y) or (w <= bed_x and l <= bed_y)
-
-
-def stock_margin(tool_d):
-    return tool_d + STOCK_MARGIN_EXTRA
-
-
 # =============================================================================
 # SETTINGS AND VALIDATION
 # =============================================================================
@@ -349,18 +315,15 @@ class CamSettings:
         self.bit_label = ""
         self.tool_d = 0.0
         self.cutting_edge_height = None
-        self.bed_x = 0.0
-        self.bed_y = 0.0
+        self.sheet_w = 630.0
+        self.sheet_h = 1080.0
+        self.clamp_h = 20.0
         self.post = ""
         self.spindle = 0.0
         self.feed_xy = 0.0
         self.feed_z = 0.0
         self.step_down = 0.0
         self.write_gcode = True
-
-    @property
-    def margin(self):
-        return stock_margin(self.tool_d)
 
 
 def validate_drawer(part, params, settings):
@@ -380,21 +343,21 @@ def validate_drawer(part, params, settings):
     if d <= 0:
         problems.append("tool diameter must be > 0")
         return problems, warnings
-    thicknesses = set()
-    row_length = settings.margin
+    clearance = nesting.edge_clearance(d)
+    max_u, max_v = settings.sheet_w - clearance, settings.sheet_h - clearance
     for role, _body in panels:
         frame = panel_frame(role, params)
-        thicknesses.add(round(frame.t, 3))
         for region in pocket_regions(role, params, frame):
             try:
                 slot_passes(region, d)
             except ToolTooWide as e:
                 problems.append("{} {}: {}".format(label, role, e))
-        if not footprint_fits(frame.L, frame.W, settings.margin, settings.bed_x, settings.bed_y):
+        item = nesting.Item((label, role), frame.L, frame.W, frame.t)
+        if not nesting.orientations(item, max_u, max_v):
             problems.append(
-                "{} {}: {:.0f} x {:.0f} mm (+{:.0f} mm margin) does not fit the bed "
-                "{:.0f} x {:.0f} mm".format(
-                    label, role, frame.L, frame.W, settings.margin, settings.bed_x, settings.bed_y
+                "{} {}: {:.0f} x {:.0f} mm does not fit the {:.0f} x {:.0f} mm sheet "
+                "(needs {:.0f} mm clearance at the right/bottom edges)".format(
+                    label, role, frame.L, frame.W, settings.sheet_w, settings.sheet_h, clearance
                 )
             )
         ceh = settings.cutting_edge_height
@@ -403,19 +366,6 @@ def validate_drawer(part, params, settings):
                 "{} {}: cutting edge {:.1f} mm is shorter than the panel thickness "
                 "{:.1f} mm".format(label, role, ceh, frame.t)
             )
-        row_length += frame.L + 2 * settings.margin
-    if len(thicknesses) > 1:
-        warnings.append(
-            "{}: panels of different thickness ({}) share one Job; the stock is generated "
-            "at the maximum thickness, every panel is cut to its own depth".format(
-                label, ", ".join("{:g}".format(t) for t in sorted(thicknesses))
-            )
-        )
-    if row_length > settings.bed_x:
-        warnings.append(
-            "{}: the panel row is {:.0f} mm long and exceeds the bed; arrange the panels in "
-            "the Job manually, then run the command again".format(label, row_length)
-        )
     return problems, warnings
 
 
@@ -523,25 +473,68 @@ def _gui():
     return bool(FreeCAD.GuiUp)
 
 
-def find_existing_job(doc, part):
+def find_lumberjack_jobs(doc, part_names):
+    """Jobs generated by Lumberjack that involve any of the given drawer Part names."""
+    names = set(part_names)
+    jobs = []
     for obj in doc.Objects:
-        if getattr(obj, "LumberjackDrawer", None) == part.Name and hasattr(obj, "Operations"):
-            return obj
-    return None
+        if not hasattr(obj, "Operations"):
+            continue
+        involved = set(getattr(obj, "LumberjackDrawers", []) or [])
+        single = getattr(obj, "LumberjackDrawer", None)  # jobs of the previous version
+        if single:
+            involved.add(single)
+        if involved & names:
+            jobs.append(obj)
+    return jobs
 
 
-def _union_bbox(objs):
-    bb = None
-    for o in objs:
-        b = o.Shape.BoundBox
-        if bb is None:
-            bb = FreeCAD.BoundBox(b)
-        else:
-            bb.add(b)
-    return bb
+def delete_job(job):
+    """Remove a CAM Job with all its resources (tools, bits, models, stock, operations)."""
+    import Path.Base.Util as PathUtil
+
+    doc = job.Document
+    # Operations first, including dress-up bases (which are not in the Operations group
+    # and would otherwise survive the Job's own teardown with dangling expressions).
+    try:
+        ops = list(job.Proxy.allOperations())
+    except Exception:
+        ops = list(job.Operations.Group) if getattr(job, "Operations", None) else []
+    dressups = [o for o in ops if hasattr(o, "Base") and not isinstance(o.Base, list) and o.Base is not None]
+    bases = [o for o in ops if o not in dressups]
+    if getattr(job, "Operations", None):
+        job.Operations.Group = []
+    for op in dressups + bases:
+        try:
+            PathUtil.clearExpressionEngine(op)
+            doc.removeObject(op.Name)
+        except Exception as e:
+            FreeCAD.Console.PrintWarning("Lumberjack: could not remove {}: {}\n".format(op.Name, e))
+    try:
+        _clear_tools(job, doc)
+    except Exception as e:
+        FreeCAD.Console.PrintWarning("Lumberjack: could not clear tools of {}: {}\n".format(job.Label, e))
+    try:
+        job.Proxy.onDelete(job, None)
+    except Exception as e:
+        FreeCAD.Console.PrintWarning("Lumberjack: job teardown of {} incomplete: {}\n".format(job.Label, e))
+    for prop in ("Model", "Tools", "Operations", "SetupSheet"):
+        child = getattr(job, prop, None)
+        if child is not None:
+            for sub in list(getattr(child, "Group", []) or []):
+                try:
+                    doc.removeObject(sub.Name)
+                except Exception:
+                    pass
+            try:
+                doc.removeObject(child.Name)
+            except Exception:
+                pass
+    doc.removeObject(job.Name)
+    doc.recompute()
 
 
-def _create_job(doc, part, bodies, settings):
+def _create_job(doc, bodies, label):
     import Path.Main.Job as PathJob
 
     if _gui():
@@ -552,14 +545,19 @@ def _create_job(doc, part, bodies, settings):
         job = PathJob.Create("Job", bodies, None)
     if job is None:
         raise RuntimeError("CAM Job creation failed (see report view)")
-    job.Label = "CAM {}".format(part.Label)
+    job.Label = label
     job.addProperty(
-        "App::PropertyString",
-        "LumberjackDrawer",
+        "App::PropertyStringList",
+        "LumberjackDrawers",
         "Lumberjack",
-        "Name of the drawer Part this Job was generated from",
+        "Names of the drawer Parts nested in this Job",
     )
-    job.LumberjackDrawer = part.Name
+    job.addProperty(
+        "App::PropertyFloat", "LumberjackThickness", "Lumberjack", "Panel thickness of this sheet"
+    )
+    job.addProperty(
+        "App::PropertyInteger", "LumberjackSheet", "Lumberjack", "Sheet number within its thickness"
+    )
     return job
 
 
@@ -585,63 +583,10 @@ def _configure_job(job, settings, out_path):
                 setattr(sheet, prop, RAPID_DEFAULT)
         except Exception:
             pass
-
-
-def _mark_laid_out(clone):
-    if "LumberjackLaidOut" not in clone.PropertiesList:
-        clone.addProperty(
-            "App::PropertyBool",
-            "LumberjackLaidOut",
-            "Lumberjack",
-            "Set once the panel has been placed flat in the Job",
-        )
-    clone.LumberjackLaidOut = True
-
-
-def _sync_models(job, doc, panels, frames, margin):
-    """
-    Make sure every panel body has a model clone in the Job.
-
-    Clones already laid out keep their Placement (user layout). New clones are laid flat
-    and appended to the right of the current layout. Clones of vanished bodies are removed.
-    Returns {role: clone}.
-    """
-    import Path.Main.Job as PathJob
-
-    body_names = {body.Name: role for role, body in panels}
-    existing = {}
-    for clone in list(job.Model.Group):
-        src = clone.Objects[0] if getattr(clone, "Objects", None) else None
-        if src is None or src.Name not in body_names:
-            job.Proxy.removeBase(job, clone, True)
-            continue
-        existing[src.Name] = clone
-
-    laid_out = [c for c in existing.values() if getattr(c, "LumberjackLaidOut", False)]
-    cursor_x = margin
-    if laid_out:
-        doc.recompute()
-        cursor_x = _union_bbox(laid_out).XMax + 2 * margin
-
-    clones = {}
-    for role, body in panels:
-        clone = existing.get(body.Name)
-        if clone is None:
-            clone = PathJob.createModelResourceClone(job, body)
-            job.Model.addObject(clone)
-        if not getattr(clone, "LumberjackLaidOut", False):
-            frame = frames[role]
-            clone.Placement = FreeCAD.Placement(Vector(0, 0, 0), frame.rotation())
-            doc.recompute()
-            bb = clone.Shape.BoundBox
-            pl = clone.Placement
-            pl.Base = pl.Base + Vector(cursor_x - bb.XMin, margin - bb.YMin, -bb.ZMax)
-            clone.Placement = pl
-            doc.recompute()
-            cursor_x += clone.Shape.BoundBox.XLength + 2 * margin
-            _mark_laid_out(clone)
-        clones[role] = clone
-    return clones
+    # Rapids must clear the clamps on the top/left sheet edges.
+    clear = settings.clamp_h + CLAMP_CLEARANCE_EXTRA
+    sheet.ClearanceHeightOffset = "{} mm".format(clear)
+    sheet.SafeHeightOffset = "{} mm".format(clear)
 
 
 def _clear_tools(job, doc):
@@ -654,7 +599,27 @@ def _clear_tools(job, doc):
         PathUtil.clearExpressionEngine(tc)
         doc.removeObject(tc.Name)
         if tool is not None and not tool.InList:
-            doc.removeObject(tool.Name)
+            _remove_toolbit(doc, tool)
+
+
+def _remove_toolbit(doc, tool):
+    """Remove a ToolBit document object together with its imported shape geometry."""
+    proxy = getattr(tool, "Proxy", None)
+    if proxy is not None and hasattr(proxy, "onDelete"):
+        try:
+            proxy.onDelete(tool)  # removes BitBody (+ its features) and the tool object
+            return
+        except Exception as e:
+            FreeCAD.Console.PrintWarning("Lumberjack: tool bit teardown incomplete: {}\n".format(e))
+    body = getattr(tool, "BitBody", None)
+    if body is not None:
+        try:
+            body.removeObjectsFromDocument()
+            doc.removeObject(body.Name)
+        except Exception:
+            pass
+    if doc.getObject(tool.Name) is not None:
+        doc.removeObject(tool.Name)
 
 
 def _setup_tool(job, doc, settings):
@@ -679,49 +644,16 @@ def _setup_tool(job, doc, settings):
     return tc
 
 
-def _clear_operations(job, doc):
-    import Path.Base.Util as PathUtil
-
-    ops = list(job.Operations.Group)
-    job.Operations.Group = []
-    # Collect dress-up chains too (their base ops are no longer in the group).
-    all_ops = []
-    stack = list(ops)
-    while stack:
-        op = stack.pop()
-        if op in all_ops:
-            continue
-        all_ops.append(op)
-        base = getattr(op, "Base", None)
-        if base is not None and not isinstance(base, list) and hasattr(base, "Path"):
-            stack.append(base)
-    # Dress-ups first (they link to their base), then everything else.
-    all_ops.sort(key=lambda o: 0 if _is_dressup(o) else 1)
-    for op in all_ops:
-        PathUtil.clearExpressionEngine(op)
-        try:
-            doc.removeObject(op.Name)
-        except Exception as e:
-            FreeCAD.Console.PrintWarning("Lumberjack: could not remove {}: {}\n".format(op.Name, e))
-    job.Operations.Group = []
-
-
-def _is_dressup(op):
-    base = getattr(op, "Base", None)
-    return base is not None and not isinstance(base, list) and hasattr(base, "Path")
-
-
-def _setup_stock(job, doc, clones, margin):
+def _setup_stock(job, doc, settings, thickness):
+    """The stock is the whole sheet: X 0..sheet_w, Y -sheet_h..0, Z -t..0."""
     import Path.Main.Stock as PathStock
 
-    doc.recompute()
-    bb = _union_bbox(clones)
     old = job.Stock
     stock = PathStock.CreateBox(
         job,
-        extent=Vector(bb.XLength + 2 * margin, bb.YLength + 2 * margin, bb.ZLength),
+        extent=Vector(settings.sheet_w, settings.sheet_h, thickness),
         placement=FreeCAD.Placement(
-            Vector(bb.XMin - margin, bb.YMin - margin, bb.ZMin), FreeCAD.Rotation()
+            Vector(0, -settings.sheet_h, -thickness), FreeCAD.Rotation()
         ),
     )
     job.Stock = stock
@@ -773,66 +705,25 @@ def _make_slot(job, name, tc, p1, p2, z_top, depth, step_down):
     return op
 
 
-def _bottom_face_name(clone):
-    """Name of the largest planar face pointing -Z at the model's lowest Z."""
-    import Part
-
-    shape = clone.Shape
-    zmin = shape.BoundBox.ZMin
-    best, best_area = None, -1.0
-    for i, face in enumerate(shape.Faces):
-        if not isinstance(face.Surface, Part.Plane):
-            continue
-        if abs(face.BoundBox.ZMax - zmin) > 1e-4:
-            continue
-        u0, u1, v0, v1 = face.ParameterRange
-        normal = face.normalAt((u0 + u1) / 2.0, (v0 + v1) / 2.0)
-        if normal.z > -0.99:
-            continue
-        if face.Area > best_area:
-            best, best_area = i, face.Area
-    if best is None:
-        raise RuntimeError("no downward face found on {}".format(clone.Label))
-    return "Face{}".format(best + 1)
-
-
-def _make_profile(job, name, tc, clone, z_top, thickness, step_down):
-    import Path.Op.Profile as PathProfile
-
-    op = PathProfile.Create(name, parentJob=job)
-    _attach_op_viewprovider(op, "Profile")
-    op.ToolController = tc
-    op.Base = [(clone, [_bottom_face_name(clone)])]
-    op.Side = "Outside"
-    op.UseComp = True
-    op.Direction = "CW"
-    op.HandleMultipleFeatures = "Individually"
-    op.processPerimeter = True
-    op.processHoles = False
-    op.processCircles = False
-    op.OffsetExtra = 0.0
-    _set_depths(op, z_top, z_top - thickness - THROUGH_OVERCUT, step_down)
-    return op
-
-
-def _make_tags(job, doc, profile, positions, thickness, name):
+def _make_tags(job, doc, base_op, positions, thickness, name):
+    """Tags dress-up on a Slot cut; replaces the base op in the operation list."""
     import Path.Dressup.Tags as PathDressupTag
 
-    tags = PathDressupTag.Create(profile, name)
+    tags = PathDressupTag.Create(base_op, name)
     if tags is None:
-        raise RuntimeError("could not create tags for {}".format(profile.Label))
+        raise RuntimeError("could not create tags for {}".format(base_op.Label))
     if _gui() and tags.ViewObject is not None:
         import Path.Dressup.Gui.Tags as PathDressupTagGui
 
         tags.ViewObject.Proxy = PathDressupTagGui.PathDressupTagViewProvider(tags.ViewObject)
-    # The dress-up replaces its base in the operation list (the GUI view provider does
-    # this on attach, headless nothing does, so do it explicitly and idempotently).
+    # The GUI view provider removes the base from the group on attach; headless nothing
+    # does, so do it explicitly (idempotent) to avoid posting the cut twice.
     group = job.Operations.Group
-    if profile in group:
-        group.remove(profile)
+    if base_op in group:
+        group.remove(base_op)
         job.Operations.Group = group
-    if profile.ViewObject is not None:
-        profile.ViewObject.Visibility = False
+    if base_op.ViewObject is not None:
+        base_op.ViewObject.Visibility = False
     tags.Width = TAB_WIDTH
     tags.Height = min(TAB_HEIGHT, thickness / 2.0)
     tags.Angle = 90.0
@@ -847,15 +738,14 @@ def _sanitize(text):
     return text or "unnamed"
 
 
-def output_path_for(doc, part):
-    """<docdir>/<Doc>_<Drawer>.nc (falls back to the working directory if unsaved)."""
+def output_dir(doc):
     folder = os.path.dirname(doc.FileName) if doc.FileName else ""
     if not folder:
         folder = os.getcwd()
         FreeCAD.Console.PrintWarning(
             "Lumberjack: document is not saved, writing G-code to {}\n".format(folder)
         )
-    return os.path.join(folder, "{}_{}.nc".format(_sanitize(doc.Label), _sanitize(part.Label)))
+    return folder
 
 
 def post_process(job, doc):
@@ -882,91 +772,228 @@ def post_process(job, doc):
     return written
 
 
-class JobResult:
-    def __init__(self, job):
+# --- layout -> job placement ---------------------------------------------------
+
+
+def _clone_placement(frame, placed):
+    """
+    Rotation that lays a panel flat on the sheet.
+
+    Featured face up. Unrotated: panel length along +X, panel-frame "up" (v) along +Y, so
+    the groove side of a wall ends up away from the sheet's top edge. Rotated: length along
+    +Y, v along -X, so the groove side ends up away from the sheet's left edge.
+    """
+    rot = frame.rotation()  # U -> X, V -> Y, N -> Z
+    if placed.rotated:
+        rot = FreeCAD.Rotation(Vector(0, 0, 1), 90).multiply(rot)  # X -> Y, Y -> -X
+    return FreeCAD.Placement(Vector(0, 0, 0), rot)
+
+
+def _place_clone(doc, clone, frame, placed):
+    """Position a model clone at its nested location (top-left corner at (u0, -v0))."""
+    clone.Placement = _clone_placement(frame, placed)
+    doc.recompute()
+    bb = clone.Shape.BoundBox
+    pl = clone.Placement
+    pl.Base = pl.Base + Vector(placed.u0 - bb.XMin, -placed.v0 - bb.YMax, -bb.ZMax)
+    clone.Placement = pl
+    doc.recompute()
+
+
+def layout_to_job(u, v):
+    """Layout frame (u right, v down from the top-left corner) -> job XY."""
+    return Vector(u, -v, 0)
+
+
+class PanelRef:
+    """Everything the job builder needs to know about one nested panel."""
+
+    def __init__(self, part, holder, params, role, body, frame):
+        self.part = part
+        self.holder = holder
+        self.params = params
+        self.role = role
+        self.body = body
+        self.frame = frame
+
+    @property
+    def key(self):
+        return (self.part.Name, self.role)
+
+
+def collect_items(drawers):
+    """nesting.Item list for the panels of [(part, holder)]."""
+    items = []
+    for part, holder in drawers:
+        params = DrawerParams(holder)
+        for role, body in drawer_panels(part):
+            frame = panel_frame(role, params)
+            ref = PanelRef(part, holder, params, role, body, frame)
+            items.append(nesting.Item(ref.key, frame.L, frame.W, frame.t, data=ref))
+    return items
+
+
+def group_by_thickness(items):
+    groups = {}
+    for item in items:
+        groups.setdefault(round(item.thickness, 2), []).append(item)
+    return [groups[t] for t in sorted(groups)]
+
+
+class SheetJobResult:
+    def __init__(self, job, thickness, sheet):
         self.job = job
-        self.created = False
-        self.slots = 0
-        self.profiles = 0
+        self.thickness = thickness
+        self.sheet = sheet
+        self.pocket_slots = 0
+        self.cut_slots = 0
         self.disabled_tabs = []
         self.gcode_files = []
 
+    @property
+    def drawers(self):
+        return sorted({p.item.data.part.Label for p in self.sheet.items})
 
-def build_or_update_job(part, holder, settings):
-    """
-    Create the CAM Job for a drawer or regenerate its operations.
 
-    Returns a JobResult.
-    """
-    doc = part.Document
-    params = DrawerParams(holder)
-    panels = drawer_panels(part)
-    frames = {role: panel_frame(role, params) for role, _b in panels}
-    margin = settings.margin
+def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir):
+    """Create one CAM Job for one nested sheet."""
+    refs = {p.item.key: p.item.data for p in sheet.items}
+    bodies = [p.item.data.body for p in sheet.items]
+    drawer_labels = sorted({r.part.Label for r in refs.values()})
+    label = "CAM {:g}mm sheet {} ({})".format(thickness, sheet_no, ", ".join(drawer_labels))
+    job = _create_job(doc, bodies, label)
+    job.LumberjackDrawers = sorted({r.part.Name for r in refs.values()})
+    job.LumberjackThickness = float(thickness)
+    job.LumberjackSheet = int(sheet_no)
+    out_path = os.path.join(
+        out_dir,
+        "{}_CAM_{:g}mm_{}.nc".format(_sanitize(doc.Label), thickness, sheet_no),
+    )
+    _configure_job(job, settings, out_path)
+    result = SheetJobResult(job, thickness, sheet)
 
-    job = find_existing_job(doc, part)
-    result = None
-    if job is None:
-        job = _create_job(doc, part, [body for _r, body in panels], settings)
-        result = JobResult(job)
-        result.created = True
-    else:
-        result = JobResult(job)
-    _configure_job(job, settings, output_path_for(doc, part))
+    # Place every model clone where the nest put its panel.
+    clones = {}
+    for clone in list(job.Model.Group):
+        src = clone.Objects[0] if getattr(clone, "Objects", None) else None
+        if src is None:
+            continue
+        for placed in sheet.items:
+            if placed.item.data.body.Name == src.Name:
+                _place_clone(doc, clone, placed.item.data.frame, placed)
+                clones[placed.item.key] = clone
+                break
 
-    clones = _sync_models(job, doc, panels, frames, margin)
-    _clear_operations(job, doc)
     tc = _setup_tool(job, doc, settings)
-    _setup_stock(job, doc, list(clones.values()), margin)
-
+    _setup_stock(job, doc, settings, thickness)
     tool_d = settings.tool_d
-    z_tops = {}
-    # Pockets first: parts stay attached to the blank while grooves and rabbets are cut.
-    for role, _body in panels:
-        clone = clones[role]
-        frame = frames[role]
+
+    # Pockets first (grooves, rabbets) so panels stay attached while pocketing.
+    for placed in sheet.items:
+        ref = placed.item.data
+        clone = clones[placed.item.key]
+        frame = ref.frame
         pl = clone.Placement
         z_top = clone.Shape.BoundBox.ZMax
-        z_tops[role] = z_top
-        for region in pocket_regions(role, params, frame):
+        for region in pocket_regions(ref.role, ref.params, frame):
             for i, ((u0, v0), (u1, v1)) in enumerate(slot_passes(region, tool_d)):
                 p1 = pl.multVec(frame.to_local(u0, v0))
                 p2 = pl.multVec(frame.to_local(u1, v1))
                 _make_slot(
                     job,
-                    "{}_{}_{}".format(role, region.name, i + 1),
+                    "{}_{}_{}_{}".format(_sanitize(ref.part.Label), ref.role, region.name, i + 1),
                     tc, p1, p2, z_top, region.depth, settings.step_down,
                 )
-                result.slots += 1
+                result.pocket_slots += 1
     doc.recompute()
 
-    # Then the outside profiles, each with hold-down tabs.
-    profiles = []
-    for role, _body in panels:
-        clone = clones[role]
-        frame = frames[role]
-        op = _make_profile(
-            job, "{}_Profile".format(role), tc, clone, z_tops[role], frame.t, settings.step_down
-        )
-        profiles.append((role, op, clone, frame))
-        result.profiles += 1
+    # Outline cuts: one Slot per merged cut line, tabs from the nest.
+    cut_ops = []
+    for i, line in enumerate(sheet.lines):
+        if line.axis == "h":
+            p1, p2 = layout_to_job(line.a0, line.pos), layout_to_job(line.a1, line.pos)
+            tabs = [(t, -line.pos) for t in line.tabs]
+        else:
+            p1, p2 = layout_to_job(line.pos, line.a0), layout_to_job(line.pos, line.a1)
+            tabs = [(line.pos, -t) for t in line.tabs]
+        name = "Cut{:g}mm_{}_{}{}".format(thickness, sheet_no, i + 1, "H" if line.axis == "h" else "V")
+        op = _make_slot(job, name, tc, p1, p2, 0.0, thickness + THROUGH_OVERCUT, settings.step_down)
+        cut_ops.append((op, tabs, name))
+        result.cut_slots += 1
     doc.recompute()
-
-    for role, op, clone, frame in profiles:
-        pl = clone.Placement
-        corners = []
-        for u, v in frame.corners():
-            w = pl.multVec(frame.to_local(u, v))
-            corners.append((w.x, w.y))
-        positions = tab_positions(corners, tool_d / 2.0)
-        tags = _make_tags(job, doc, op, positions, frame.t, "{}_Tags".format(role))
+    for op, tabs, name in cut_ops:
+        if not tabs:
+            continue
+        tags = _make_tags(job, doc, op, tabs, thickness, name + "_Tags")
         if tags.Disabled:
-            result.disabled_tabs.append((role, list(tags.Disabled)))
+            result.disabled_tabs.append((name, list(tags.Disabled)))
     doc.recompute()
 
     if settings.write_gcode:
         result.gcode_files = post_process(job, doc)
     return result
+
+
+def run(drawers, settings):
+    """
+    Validate, nest and build the sheet Jobs for [(part, holder)].
+
+    Existing Lumberjack Jobs involving any of the drawers are replaced; drawers that shared
+    those Jobs are re-nested along (otherwise their panels would lose their Job).
+    Returns (results, problems, warnings). Nothing is modified when problems is non-empty.
+    """
+    problems = []
+    warnings = []
+    drawers = list(drawers)
+    doc = drawers[0][0].Document
+    names = {part.Name for part, _h in drawers}
+    extra = []
+    for job in find_lumberjack_jobs(doc, names):
+        for name in list(getattr(job, "LumberjackDrawers", []) or []):
+            if name in names:
+                continue
+            other = doc.getObject(name)
+            other_holder = _drawers.drawer_holder(other) if other is not None else None
+            if other_holder is not None:
+                drawers.append((other, other_holder))
+                names.add(name)
+                extra.append(other.Label)
+    if extra:
+        warnings.append(
+            "also re-nested drawers that shared sheets with the selection: {}".format(
+                ", ".join(sorted(extra))
+            )
+        )
+    for part, holder in drawers:
+        pr, wa = validate_drawer(part, DrawerParams(holder), settings)
+        problems.extend(pr)
+        warnings.extend(wa)
+    if problems:
+        return [], problems, warnings
+
+    items = collect_items(drawers)
+    nested = []  # (thickness, [Sheet])
+    for group in group_by_thickness(items):
+        try:
+            sheets = nesting.nest(group, settings.sheet_w, settings.sheet_h, settings.tool_d)
+        except nesting.DoesNotFit as e:
+            problems.append(str(e))
+            continue
+        nested.append((group[0].thickness, sheets))
+    if problems:
+        return [], problems, warnings
+
+    for job in find_lumberjack_jobs(doc, names):
+        delete_job(job)
+
+    out_dir = output_dir(doc)
+    results = []
+    for thickness, sheets in nested:
+        for sheet in sheets:
+            results.append(
+                build_sheet_job(doc, sheet, thickness, sheet.index + 1, settings, out_dir)
+            )
+    return results, problems, warnings
 
 
 # =============================================================================
@@ -1020,18 +1047,14 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
 
         doc = FreeCAD.ActiveDocument
-        lines = []
-        for part, _holder in self.drawers:
-            existing = find_existing_job(doc, part) if doc else None
-            if existing is not None:
-                lines.append(
-                    "{}: existing Job '{}' found, layout kept, operations regenerated".format(
-                        part.Label, existing.Label
-                    )
-                )
-            else:
-                lines.append("{}: new Job".format(part.Label))
-        info = QtWidgets.QLabel("\n".join(lines))
+        labels = ", ".join(part.Label for part, _holder in self.drawers)
+        existing = find_lumberjack_jobs(doc, [p.Name for p, _h in self.drawers]) if doc else []
+        text = "Drawers: {}".format(labels)
+        if existing:
+            text += "\nExisting Jobs will be replaced: {}".format(
+                ", ".join(j.Label for j in existing)
+            )
+        info = QtWidgets.QLabel(text)
         info.setWordWrap(True)
         layout.addWidget(info)
 
@@ -1067,13 +1090,15 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
         self._row(tool_layout, "Step down", self.step_down)
         layout.addWidget(tool_group)
 
-        # --- Machine ---
-        machine_group = QtWidgets.QGroupBox("Machine")
+        # --- Machine / sheet ---
+        machine_group = QtWidgets.QGroupBox("Sheet and machine")
         machine_layout = QtWidgets.QVBoxLayout(machine_group)
-        self.bed_x = self._quantity_spinbox("bed_x", 1200.0)
-        self._row(machine_layout, "Bed size X", self.bed_x)
-        self.bed_y = self._quantity_spinbox("bed_y", 800.0)
-        self._row(machine_layout, "Bed size Y", self.bed_y)
+        self.sheet_w = self._quantity_spinbox("sheet_w", DEFAULT_SHEET_W)
+        self._row(machine_layout, "Sheet width (X)", self.sheet_w)
+        self.sheet_h = self._quantity_spinbox("sheet_h", DEFAULT_SHEET_H)
+        self._row(machine_layout, "Sheet height (Y)", self.sheet_h)
+        self.clamp_h = self._quantity_spinbox("clamp_h", DEFAULT_CLAMP_H)
+        self._row(machine_layout, "Clamp height", self.clamp_h)
         self.post_combo = QtWidgets.QComboBox()
         try:
             posts = available_post_processors()
@@ -1092,10 +1117,10 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
         layout.addWidget(self.write_check)
 
         note = QtWidgets.QLabel(
-            "Tabs: {} per edge, {:g} mm wide, {:g} mm high. Panels are laid out in a row; "
-            "move them in the Job and run the command again to regenerate.".format(
-                TABS_PER_EDGE, TAB_WIDTH, TAB_HEIGHT
-            )
+            "Zero is the sheet's top-left corner (X right, Y negative towards you). Panels "
+            "hug the top and left edges; clamp there. One Job per sheet and thickness; "
+            "existing Jobs of these drawers are replaced. Tabs {:g} mm wide, {:g} mm high, "
+            "rapids clear the clamp height.".format(TAB_WIDTH, TAB_HEIGHT)
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1122,8 +1147,9 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
         s.bit_label = info.label
         s.tool_d = info.diameter
         s.cutting_edge_height = info.edge_height
-        s.bed_x = self._raw(self.bed_x)
-        s.bed_y = self._raw(self.bed_y)
+        s.sheet_w = self._raw(self.sheet_w)
+        s.sheet_h = self._raw(self.sheet_h)
+        s.clamp_h = self._raw(self.clamp_h)
         s.post = self.post_combo.currentText()
         s.spindle = float(self.spindle.value())
         s.feed_xy = self._raw(self.feed_xy)
@@ -1135,8 +1161,9 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
 
 def remember_settings(s):
     _set_last_str(_pref("bit_id"), s.bit_id)
-    _set_last_str(_pref("bed_x"), str(s.bed_x))
-    _set_last_str(_pref("bed_y"), str(s.bed_y))
+    _set_last_str(_pref("sheet_w"), str(s.sheet_w))
+    _set_last_str(_pref("sheet_h"), str(s.sheet_h))
+    _set_last_str(_pref("clamp_h"), str(s.clamp_h))
     _set_last_str(_pref("post"), s.post)
     _set_last_str(_pref("spindle"), str(s.spindle))
     _set_last_str(_pref("feed_xy"), str(s.feed_xy))
@@ -1158,28 +1185,28 @@ def _message(title, text, error=False):
         box.exec_()
 
 
-def run(drawers, settings):
-    """
-    Validate and build/update the Jobs for [(part, holder)] with the given settings.
-
-    Returns (results, problems, warnings). Nothing is modified when problems is non-empty.
-    """
-    problems = []
-    warnings = []
-    params = {}
-    for part, holder in drawers:
-        p = DrawerParams(holder)
-        params[part.Name] = p
-        pr, wa = validate_drawer(part, p, settings)
-        problems.extend(pr)
-        warnings.extend(wa)
-    if problems:
-        return [], problems, warnings
-
-    results = []
-    for part, holder in drawers:
-        results.append(build_or_update_job(part, holder, settings))
-    return results, problems, warnings
+def summarize_results(results, warnings):
+    lines = []
+    for r in results:
+        s = r.sheet
+        lines.append(
+            "{}: {} panels, blank at least {:.0f} x {:.0f} mm, {} pocket passes, {} cuts{}".format(
+                r.job.Label, len(s.items), s.used_w, s.used_h, r.pocket_slots, r.cut_slots,
+                ", G-code: " + ", ".join(r.gcode_files) if r.gcode_files else "",
+            )
+        )
+        if s.top_edge_cuts():
+            lines.append("  cuts reach the top edge at x = {} (no clamps there)".format(
+                ", ".join("{:.0f}".format(u) for u in s.top_edge_cuts())))
+        if s.left_edge_cuts():
+            lines.append("  cuts reach the left edge at y = {} (no clamps there)".format(
+                ", ".join("{:.0f}".format(v) for v in s.left_edge_cuts())))
+        for name, ids in r.disabled_tabs:
+            lines.append("  WARNING {}: tabs {} were disabled by CAM, check the cut".format(name, ids))
+    if warnings:
+        lines.append("")
+        lines.extend("Note: " + w for w in warnings)
+    return lines
 
 
 def show_create_drawer_cam_dialog():
@@ -1209,26 +1236,9 @@ def show_create_drawer_cam_dialog():
 
     results, problems, warnings = run(drawers, settings)
     if problems:
-        _message("Drawer CAM Job", "Cannot create the CAM Job:\n- " + "\n- ".join(problems), error=True)
+        _message("Drawer CAM Job", "Cannot create the CAM Jobs:\n- " + "\n- ".join(problems), error=True)
         return None
     remember_settings(settings)
-
-    lines = []
-    for r in results:
-        lines.append(
-            "{} {}: {} slot passes, {} profiles{}".format(
-                r.job.Label,
-                "created" if r.created else "regenerated",
-                r.slots,
-                r.profiles,
-                ", G-code: " + ", ".join(r.gcode_files) if r.gcode_files else "",
-            )
-        )
-        for role, ids in r.disabled_tabs:
-            lines.append("  WARNING {}: tabs {} were disabled by CAM, check the profile".format(role, ids))
-    if warnings:
-        lines.append("")
-        lines.extend("Note: " + w for w in warnings)
     doc.recompute()
-    _message("Drawer CAM Job", "\n".join(lines))
+    _message("Drawer CAM Job", "\n".join(summarize_results(results, warnings)))
     return results

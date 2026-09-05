@@ -116,9 +116,9 @@ tongue. `bottom_v_offset` raises the groove in both cases.
 
 ### Drawer CAM Job Command
 
-Generates a FreeCAD CAM Job with operations, hold-down tabs and G-code for drawers made
-with *Create Drawer*. Select one or more drawers (the drawer Part or anything inside it)
-and run **Drawer CAM Job** (toolbar, pie menu key `G`).
+Generates FreeCAD CAM Jobs with operations, hold-down tabs and G-code for drawers made
+with *Create Drawer*. Select one or more drawers (a drawer Part, anything inside it, or a
+previously generated Job) and run **Drawer CAM Job** (toolbar, pie menu key `G`).
 
 The dialog asks for (all values are remembered):
 
@@ -127,26 +127,35 @@ The dialog asks for (all values are remembered):
   (`t_bottom` for an inserted bottom, `t_bottom / 2` for a captured one) or the rabbets,
   otherwise the command refuses with an explanation.
 - **Spindle speed, XY feed, plunge feed, step down**.
-- **Bed size X/Y**: every panel (plus stock margin) must fit in either orientation.
+- **Sheet width / height**: the machine work area, default 630 x 1080 mm. Every panel
+  must fit in some orientation (with tool clearance at the right/bottom edges).
+- **Clamp height** (default 20 mm): rapids travel 2 mm above it.
 - **Post processor** (default `uccnc`) and whether to **write the G-code now**.
 
-What is generated, per drawer, in one Job labelled `CAM <Drawer>`:
+Nesting (`nesting.py`): the panels of all selected drawers are grouped by thickness and
+packed in columns from the sheet's top-left corner, long side vertical whenever it fits,
+rotated otherwise. Neighbouring panels are exactly one tool diameter apart so one cut
+separates both and its tabs hold both. Edges flush with the sheet's top and left edges are
+not cut at all, so those edges are where the sheet gets clamped; the summary lists the
+positions where cuts do reach those edges. Panels that do not fit go onto another sheet.
 
-- One model clone per panel, laid flat with the pocketed face up and the top face at
-  Z = 0, all panels in a row along X. The stock is a box around all panels
-  (margin = tool diameter + 5 mm), Z from the thickest panel to 0.
-- **Slot passes** for the bottom groove of the four walls, the half-lap end rabbets of
-  the full-length walls (not with `overlap_box`) and, for a captured bottom only, the
-  four rabbet strips of the bottom. Passes overlap by 50 % of the tool diameter and
-  overshoot open ends.
-- One **outside Profile** per panel (through cut, 0.2 mm into the spoilboard) with a
-  **Tags** dress-up: 2 tabs per edge, 10 mm wide, 3 mm high.
-- G-code at `<document folder>/<Document>_<Drawer>.nc` (also set as the Job output).
+Per sheet one Job labelled `CAM <t>mm sheet <n> (<drawers>)`:
 
-Re-running the command on a drawer that already has a Job keeps the panel layout and
-regenerates stock, operations, tabs and G-code from the current placements. Use this
-after arranging the panels manually in the Job (all operations are recomputed from the
-model placements, so moving a panel without re-running leaves stale toolpaths).
+- **Coordinates**: zero is the sheet's top-left corner, X to the right, Y negative
+  towards the operator, Z = 0 on the sheet surface. Cut a blank at least as large as
+  the reported minimum, square at that corner, and zero the machine there.
+- The models are the panel bodies laid flat, pocketed face up, at their nested places.
+  The stock is the whole sheet.
+- **Slot passes** for the bottom groove of the walls, the half-lap end rabbets of the
+  full-length walls (not with `overlap_box`) and, for a captured bottom, its four rabbet
+  strips. Passes overlap by 50 % of the tool diameter and overshoot open ends.
+- **One Slot per merged cut line** (through cut, 0.2 mm into the spoilboard) with a
+  **Tags** dress-up: tabs at 1/3 and 2/3 of every panel edge on that line, 10 mm wide,
+  3 mm high (at most half the thickness).
+- G-code at `<document folder>/<Document>_CAM_<t>mm_<n>.nc` (also set as the Job output).
+
+Running the command again re-nests and **replaces** the Jobs of the selected drawers
+(and Jobs they shared with other drawers). Manual changes to those Jobs are lost.
 
 Half-lap joinery is not modelled in the drawer bodies; the CAM code synthesises it:
 the full-length panels (Front/Back, or SideL/SideR when a drawer front exists) get a
@@ -227,12 +236,12 @@ every panel body is exposed to the cutlist generator.
 
 ### Generating drawer G-code
 
-1. Select a drawer (or several) in the tree
+1. Select the drawers in the tree
 2. Run **Drawer CAM Job** (`q,q` then `G`, or the toolbar)
-3. Pick the tool bit and check bed size, feeds and post processor
-4. Inspect the Job in the CAM workbench (simulator works per operation)
-5. Optionally move the panels on the stock, then run the command again to regenerate
-6. The `.nc` file sits next to the document
+3. Pick the tool bit and check sheet size, clamp height, feeds and post processor
+4. Read the summary: minimum blank per sheet and where cuts reach the clamp edges
+5. Inspect the Jobs in the CAM workbench (simulator works per operation)
+6. The `.nc` files sit next to the document, one per sheet
 
 Headless tests: `test_cam.py` (console) and `test_cam_gui.py` (offscreen GUI), see the
 docstrings for the command lines.
@@ -260,6 +269,7 @@ Lumberjack/
 ├── panels.py         # Panel creation dialog and logic
 ├── drawers.py        # Parametric drawer (Std_Part with panel bodies) and dialog
 ├── cam.py            # Drawer CAM Job generation (operations, tabs, G-code)
+├── nesting.py        # Sheet nesting and cut-line planning (pure Python)
 ├── reload.py         # Development helpers: hot-reload modules, smoke tests
 ├── test_cam.py       # Headless end-to-end test for cam.py
 ├── test_cam_gui.py   # Offscreen GUI smoke test for cam.py
@@ -331,7 +341,7 @@ Planned features:
 - [ ] Panel edge banding options
 - [ ] Grain direction indicators
 - [ ] Cutlist generation integration
-- [ ] Drawer CAM: nest panels by thickness, second bit for the through cut, configurable tabs
+- [ ] Drawer CAM: second bit for the through cut, configurable tabs, nesting of plain panels
 - [ ] Material database
 - [ ] Hardware library (hinges, slides, etc.)
 - [ ] Assembly helpers

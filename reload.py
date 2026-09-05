@@ -66,8 +66,14 @@ def reload_drawers():
     return reload_module("drawers")
 
 
+def reload_nesting():
+    """Reload the nesting module (sheet layout for CAM)."""
+    return reload_module("nesting")
+
+
 def reload_cam():
-    """Reload the cam module (drawer CAM job generation)."""
+    """Reload the cam module (drawer CAM job generation); reloads nesting first."""
+    reload_nesting()
     return reload_module("cam")
 
 

@@ -135,6 +135,20 @@ def drawer_holder(part):
     return None
 
 
+def _job_drawer_parts(obj):
+    """Drawer Parts referenced by a Lumberjack CAM Job object (else empty)."""
+    names = list(getattr(obj, "LumberjackDrawers", []) or [])
+    single = getattr(obj, "LumberjackDrawer", None)  # jobs of an earlier version
+    if single:
+        names.append(single)
+    parts = []
+    for name in names:
+        part = obj.Document.getObject(name)
+        if part is not None:
+            parts.append(part)
+    return parts
+
+
 def find_drawer_part(obj):
     """
     Resolve any object (drawer Part, body, feature, or a generated CAM Job) to its drawer.
@@ -143,11 +157,10 @@ def find_drawer_part(obj):
     """
     if obj is None:
         return None
-    if hasattr(obj, "LumberjackDrawer"):
-        part = obj.Document.getObject(obj.LumberjackDrawer)
-        holder = drawer_holder(part) if part else None
+    for job_part in _job_drawer_parts(obj):
+        holder = drawer_holder(job_part)
         if holder:
-            return part, holder
+            return job_part, holder
     queue = [obj]
     seen = set()
     while queue:
@@ -175,14 +188,21 @@ def selected_drawers():
         return drawers, rejected
     seen = set()
     for obj in FreeCADGui.Selection.getSelection():
-        found = find_drawer_part(obj)
-        if found is None:
+        found = []
+        job_parts = _job_drawer_parts(obj)
+        if job_parts:  # a CAM Job selects every drawer nested in it
+            found = [(p, drawer_holder(p)) for p in job_parts if drawer_holder(p)]
+        else:
+            single = find_drawer_part(obj)
+            if single is not None:
+                found = [single]
+        if not found:
             rejected.append(obj.Label)
             continue
-        part, holder = found
-        if part.Name not in seen:
-            seen.add(part.Name)
-            drawers.append((part, holder))
+        for part, holder in found:
+            if part.Name not in seen:
+                seen.add(part.Name)
+                drawers.append((part, holder))
     return drawers, rejected
 
 
@@ -742,7 +762,7 @@ def recreate_drawer(part, name=None, values=None):
     try:
         import cam
 
-        had_job = cam.find_existing_job(doc, part) is not None
+        had_job = bool(cam.find_lumberjack_jobs(doc, [part.Name]))
     except Exception:
         pass
 

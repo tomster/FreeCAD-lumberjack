@@ -65,25 +65,27 @@ def main():
     dlg.bit_combo.setCurrentIndex(idx)
     s = dlg.get_settings()
     check(s.tool_d == dlg.bits[idx].diameter, "settings carry the bit diameter")
-    check(s.bed_x > 0 and s.feed_xy > 0 and s.step_down > 0, "quantity spinboxes read back")
+    check(s.sheet_w > 0 and s.clamp_h > 0 and s.feed_xy > 0 and s.step_down > 0, "quantity spinboxes read back")
     check(s.post, "post processor selected: {}".format(s.post))
     dlg.deleteLater()
 
     results, problems, warnings = cam.run(drawers_sel, s)
     check(not problems, "run ok: {}".format(problems))
-    res = results[0]
+    check(sorted(r.thickness for r in results) == [8.0, 12.0], "one job per thickness (8 and 12 mm)")
+    res = [r for r in results if r.thickness == 12.0][0]
     job = res.job
     check(job.ViewObject is not None and job.ViewObject.Proxy is not None, "job has a view provider")
     check(not getattr(job.ViewObject.Proxy, "deleteOnReject", False), "job not marked deleteOnReject")
     for op in job.Operations.Group:
         check(op.ViewObject.Proxy is not None, "{} has a view provider".format(op.Label))
-    check(len(job.Model.Group) == 5, "5 clones (no drawer front)")
-    check(res.profiles == 5 and res.slots > 0, "ops created")
+    check(len(job.Model.Group) == 4, "4 clones on the 12 mm sheet (walls)")
+    check(res.cut_slots > 0 and res.pocket_slots > 0, "ops created")
     rabbets = [o for o in job.Proxy.allOperations() if "RabbetEnd" in o.Label]
-    check(rabbets and all(o.Label.startswith(("Front", "Back")) for o in rabbets),
+    check(rabbets and all("_Front_" in o.Label or "_Back_" in o.Label for o in rabbets),
           "without drawer front the Front/Back panels get the end rabbets")
     check(res.gcode_files and os.path.exists(res.gcode_files[0]), "gcode written")
     check(job.Tools.Group[0].ViewObject.Proxy is not None, "tool controller has a view provider")
+    check(abs(job.Stock.Shape.BoundBox.XMax - s.sheet_w) < 1e-6, "stock is the sheet")
 
     # Selecting the Job resolves back to its drawer.
     FreeCADGui.Selection.clearSelection()
