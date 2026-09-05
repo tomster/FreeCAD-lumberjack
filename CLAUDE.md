@@ -25,6 +25,7 @@ code in this folder.
 | `cam.py` | Drawer CAM Job: validation, sheet Jobs, Slot ops, Tags, post-processing, dialog |
 | `nesting.py` | pure-Python sheet nesting and cut-line/tab planning (no FreeCAD imports) |
 | `naming.py` | pure-Python compact group names for CAM containers (`python3 naming.py` self-checks) |
+| `sheetdraw.py` | pure-Python SVG for the TechDraw sheet pages (`python3 sheetdraw.py > page.svg` previews) |
 | `reload.py` | hot-reload helpers (`reload_all()`), smoke helpers |
 | `test_cam.py` | headless end-to-end test (drawers, nesting, Jobs, G-code, recreate) |
 | `test_cam_gui.py` | offscreen GUI smoke test (dialog widgets, view providers) |
@@ -63,6 +64,9 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   from containers by having `Operations`. Each Job sits in a sheet frame (`App::Part`
   with `LumberjackSheetFrame`) whose Placement offsets the display along X
   (`JOB_GAP_FRACTION`); never move Job objects themselves, that would change the G-code.
+- Every sheet frame holds a TechDraw page (`cam.make_sheet_page`) with three
+  `DrawViewSymbol` views tagged `LumberjackView` = Title/Sheet/Legend. Labels are not
+  unique across pages; find views via `cam.page_view(page, role)`.
 - A container is reused only when its drawer set equals the run's (keeps user renames);
   otherwise emptied containers are removed and a new one is named via `naming.group_name`.
 - CAM layout frame: `u` right, `v` away from the reference edge; mapped to Job XY by
@@ -92,6 +96,14 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   instead of `not obj.InList` when deciding whether a tool bit is still referenced.
 - FreeCAD reuses freed internal names (`Job`, `CamJobs`); never identify old objects by
   name across a delete/recreate cycle in tests.
+- TechDraw (1.1.3): the shipped default template is a blank A4 landscape without title
+  block or editable texts. `DrawViewSymbol` SVGs with `width/height` in `mm` and a
+  matching `viewBox` render 1:1 in page millimetres; the view's `X`/`Y` is the symbol
+  centre (page origin bottom-left, Y up). Page size is `page.PageWidth/PageHeight`
+  (attributes, not methods). Removing a page removes its template. Page exports:
+  `TechDrawGui.exportPageAsPdf/Svg(page, path)` (text becomes outlines in SVG). Pages do
+  not auto-open MDI windows when created from Python. `frame.addObject(page)` does not
+  pull in views/template (their links are not local scope); that is fine.
 - Object names that are unit symbols (`H`, `m`, `A`, ...) break expressions.
 - Legacy post scripts pop an editor in GUI mode unless `--no-show-editor` is passed.
 

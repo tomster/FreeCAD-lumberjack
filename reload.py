@@ -76,10 +76,16 @@ def reload_naming():
     return reload_module("naming")
 
 
+def reload_sheetdraw():
+    """Reload the sheetdraw module (SVG for the TechDraw sheet pages)."""
+    return reload_module("sheetdraw")
+
+
 def reload_cam():
-    """Reload the cam module (drawer CAM job generation); reloads nesting and naming first."""
+    """Reload the cam module (drawer CAM job generation); reloads its pure helpers first."""
     reload_nesting()
     reload_naming()
+    reload_sheetdraw()
     return reload_module("cam")
 
 

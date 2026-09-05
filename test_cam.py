@@ -225,6 +225,25 @@ def main():
         check(abs(r.frame.Placement.Base.x - i * 630 * 1.1) < 1e-6 and abs(r.frame.Placement.Base.y) < 1e-9,
               "sheet {} displayed at x = {:.0f} (10 % gap)".format(i + 1, i * 693))
     check(abs(job.Stock.Placement.Base.x) < 1e-6 and abs(job.Stock.Shape.BoundBox.XMin) < 1e-6, "stock itself keeps machine coordinates")
+
+    # --- TechDraw overview page --------------------------------------------------------
+    page = r12.page
+    check(page is not None and page.TypeId == "TechDraw::DrawPage" and page in frame.Group, "sheet frame holds a TechDraw page")
+    check(page.Label == os.path.basename(job.PostProcessorOutputFile), "page titled after the gcode file: {}".format(page.Label))
+    check(page.Template is not None and len(page.Views) == 3 and not any("Invalid" in o.State for o in [page, page.Template] + list(page.Views)), "page, template and views valid (no link-scope errors)")
+    names = sorted(v.LumberjackView for v in page.Views)
+    check(names == ["Legend", "Sheet", "Title"], "page has title, sheet and legend views: {}".format(names))
+    sheet_view = cam.page_view(page, "Sheet")
+    legend_view = cam.page_view(page, "Legend")
+    for clone in job.Model.Group:
+        body_label = clone.Objects[0].Label
+        check(body_label in sheet_view.Symbol and body_label in legend_view.Symbol, "{} labelled inline and in the legend".format(body_label))
+    check(legend_view.Symbol.count("<text") == 2 * len(job.Model.Group), "legend has one label and one dimension text per panel")
+    check(sheet_view.Symbol.count('fill="#000"') == sum(len(l.tabs) for l in r12.sheet.lines), "every tab is drawn")
+    check(page.PageWidth > page.PageHeight and 'rotate(90)' in sheet_view.Symbol, "landscape template: portrait content rotated")
+    check(sheet_view.X > legend_view.X > 0 and sheet_view.X < cam.page_view(page, "Title").X, "title, sheet, legend ordered along the rotated page")
+    check(all(0 < v.X < page.PageWidth and 0 < v.Y < page.PageHeight for v in page.Views), "all views on the page")
+    check(all(r.page is not None and r.page in r.frame.Group for r in results), "every sheet job has its page")
     check(all(not any(o in container.Group for o in p.Group) for p in (part, part_c)), "drawer bodies stay in their drawers")
     check(frame.Label == "12mm sheet 1" and job.Label == "Job 12mm sheet 1", "sheet with all drawers is labelled plainly: {} / {}".format(frame.Label, job.Label))
     f18 = by_t[18.0][0].frame

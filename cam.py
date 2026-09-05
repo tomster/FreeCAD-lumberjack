@@ -49,6 +49,7 @@ except ImportError:  # pragma: no cover - headless without Gui module
 import drawers as _drawers
 import nesting
 import naming
+import sheetdraw
 from drawers import _get_last_bool, _get_last_str, _set_last_bool, _set_last_str
 
 Vector = FreeCAD.Vector
@@ -643,8 +644,12 @@ def delete_job(job):
             except Exception:
                 pass
     doc.removeObject(job.Name)
-    if frame is not None and not list(frame.Group):
-        doc.removeObject(frame.Name)
+    if frame is not None:
+        for obj in list(frame.Group):
+            if obj.TypeId == "TechDraw::DrawPage":
+                _remove_page(doc, obj)
+        if not list(frame.Group):
+            doc.removeObject(frame.Name)
     doc.recompute()
 
 
@@ -897,6 +902,89 @@ def post_process(job, doc):
     return written
 
 
+# --- TechDraw overview page ---------------------------------------------------
+
+
+PAGE_VIEW_PROP = "LumberjackView"
+
+
+def page_view(page, role):
+    """The page's view with the given role ("Title", "Sheet", "Legend"), or None."""
+    for view in page.Views:
+        if getattr(view, PAGE_VIEW_PROP, None) == role:
+            return view
+    return None
+
+
+def default_template_path():
+    """The TechDraw default template (user preference, else the shipped A4 landscape)."""
+    pref = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/TechDraw/Files")
+    path = pref.GetString("TemplateFile", "")
+    if not path or not os.path.isfile(path):
+        path = os.path.join(
+            FreeCAD.getResourceDir(), "Mod", "TechDraw", "Templates", "Default_Template_A4_Landscape.svg"
+        )
+    return path
+
+
+def _remove_page(doc, page):
+    for view in list(getattr(page, "Views", []) or []):
+        try:
+            doc.removeObject(view.Name)
+        except Exception:
+            pass
+    template = getattr(page, "Template", None)
+    template_name = template.Name if template is not None else None
+    doc.removeObject(page.Name)  # takes the template with it in recent versions
+    if template_name and doc.getObject(template_name) is not None:
+        doc.removeObject(template_name)
+
+
+def make_sheet_page(doc, frame, sheet, refs, settings, title, subtitle):
+    """
+    A TechDraw page inside the sheet frame: title, the sheet with panels, cuts, tabs and
+    inline labels, and a legend with one label strip per panel.
+    """
+    import TechDraw  # noqa: F401  (registers the TechDraw types)
+
+    page = doc.addObject("TechDraw::DrawPage", "SheetPage")
+    page.Label = title
+    template = doc.addObject("TechDraw::DrawSVGTemplate", "SheetTemplate")
+    template.Template = default_template_path()
+    page.Template = template
+    doc.recompute()  # template read -> page size known
+    page_w, page_h = float(page.PageWidth), float(page.PageHeight)
+
+    panels = []
+    for placed in sheet.items:
+        ref = refs[placed.item.key]
+        item = placed.item
+        panels.append(
+            sheetdraw.Panel(
+                placed.u0, placed.v0, placed.du, placed.dv, ref.body.Label,
+                "{:g} x {:g} x {:g} mm".format(item.length, item.width, item.thickness),
+            )
+        )
+    cuts = [sheetdraw.Cut(l.axis, l.pos, l.a0, l.a1, l.tabs) for l in sheet.lines]
+    views = sheetdraw.compose(
+        page_w, page_h, title, subtitle, settings.sheet_w, settings.sheet_h, panels, cuts,
+        settings.tool_d, TAB_WIDTH, settings.origin == ORIGIN_TOP_LEFT,
+    )
+    for v in views:
+        sym = doc.addObject("TechDraw::DrawViewSymbol", "Sheet" + v.name)
+        sym.Label = v.name
+        sym.addProperty("App::PropertyString", PAGE_VIEW_PROP, "Lumberjack", "Role of this view")
+        setattr(sym, PAGE_VIEW_PROP, v.name)
+        sym.Symbol = v.svg
+        page.addView(sym)
+        sym.X = v.x
+        sym.Y = v.y
+        sym.LockPosition = False
+    doc.recompute()
+    frame.addObject(page)
+    return page
+
+
 # --- layout -> job placement ---------------------------------------------------
 
 
@@ -995,6 +1083,7 @@ class SheetJobResult:
         self.gcode_files = []
         self.container = None
         self.frame = None
+        self.page = None
 
     @property
     def drawers(self):
@@ -1093,6 +1182,13 @@ def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir, containe
     # later would stay outside and trip the link-scope check.
     sheet_frame.addObject(job)
     doc.recompute()
+
+    title = os.path.basename(out_path)
+    subtitle = "{}  |  {} panels, {} cuts, {} tabs  |  zero at the {} corner".format(
+        os.path.dirname(out_path), len(sheet.items), len(sheet.lines),
+        sum(len(l.tabs) for l in sheet.lines), settings.origin,
+    )
+    result.page = make_sheet_page(doc, sheet_frame, sheet, refs, settings, title, subtitle)
 
     if settings.write_gcode:
         result.gcode_files = post_process(job, doc)

@@ -108,6 +108,19 @@ def main():
     everything = [o for r in results for o in r.frame.Group] + list(container.Group)
     check(not any("Invalid" in o.State for o in everything), "no invalid objects in the container (link scope)")
     check(all(r.frame.ViewObject is not None and r.frame.ViewObject.Visibility for r in results), "frames visible")
+
+    # TechDraw pages render and export.
+    import TechDrawGui
+    page = res.page
+    check(page is not None and page.ViewObject is not None, "page has a view provider")
+    pdf = os.path.join(OUT_DIR, "sheet.pdf")
+    TechDrawGui.exportPageAsPdf(page, pdf)
+    check(os.path.exists(pdf) and os.path.getsize(pdf) > 1000, "page exported as PDF")
+    svg = os.path.join(OUT_DIR, "sheet.svg")
+    TechDrawGui.exportPageAsSvg(page, svg)
+    check(os.path.exists(svg) and "font-family" in open(svg, encoding="utf-8").read(), "exported SVG contains rendered text (as outlines)")
+    check(all("Schublade_" + role in cam.page_view(page, kind).Symbol for kind in ("Sheet", "Legend") for role in ("SideL", "SideR", "Front", "Back")), "symbols carry the panel labels")
+    log("open pages: {}".format([w.windowTitle() for w in FreeCADGui.getMainWindow().findChildren(cam.QtWidgets.QMdiSubWindow)]))
     FreeCADGui.Selection.clearSelection()
     FreeCADGui.Selection.addSelection(doc.Name, container.Name)
     d3, rej3 = cam.selected_drawers()

@@ -156,6 +156,15 @@ side by side along X, one sheet width plus a 10 % gap apart, so the sheets do no
 in the 3D view; the first sheet sits at the origin. Only the display is shifted: every
 Job, its stock and operations keep machine coordinates and the G-code is unaffected.
 
+Each sheet frame also gets a **TechDraw page** (`sheetdraw.py`) titled with the name of
+the sheet's G-code file, on the TechDraw default template (A4 landscape unless you set
+another one in the TechDraw preferences). The content is laid out portrait and rotated
+onto the landscape page, so turn the printout counter-clockwise: the title on top, then
+the sheet with its panels, cut lines, tabs and the panel label inside every panel, and
+underneath a legend with one strip per panel (label and length x width x thickness,
+dashed cut guides between strips) to cut off and tape onto the physical parts. Double
+click the page in the tree to open it; File > Export or the TechDraw toolbar print it.
+
 - **Coordinates**: zero is the chosen sheet corner, X to the right, Z = 0 on the sheet
   surface; Y is negative (top-left origin) or positive (bottom-left origin). Cut a blank
   at least as large as the reported minimum, square at that corner, and zero the machine
@@ -291,6 +300,7 @@ Lumberjack/
 ├── cam.py            # Drawer CAM Job generation (operations, tabs, G-code)
 ├── nesting.py        # Sheet nesting and cut-line planning (pure Python)
 ├── naming.py         # Compact names for CAM containers (pure Python)
+├── sheetdraw.py      # SVG for the TechDraw sheet overview pages (pure Python)
 ├── reload.py         # Development helpers: hot-reload modules, smoke tests
 ├── test_cam.py       # Headless end-to-end test for cam.py
 ├── test_cam_gui.py   # Offscreen GUI smoke test for cam.py
