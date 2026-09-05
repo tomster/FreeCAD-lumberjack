@@ -1,0 +1,88 @@
+# CLAUDE.md — Lumberjack workbench
+
+FreeCAD workbench for furniture design: parametric panels and drawers, plus CAM Job
+generation (nesting, grooves/rabbets, tabs, G-code) for drawers. The broader development
+reference (AppImages, headless patterns, isolation rules, hot reload) lives one level up
+in `../../agents.md`; read it once per session. This file holds what is specific to the
+code in this folder.
+
+## Runtime and API sources
+
+- Target runtime: FreeCAD **1.1.3** AppImage (`~/Applications/FreeCAD.AppImage`).
+- The source checkout `~/Development/freecad/FreeCAD` is on `main`. Read CAM/Path API
+  from tag `1.1.3` (`git show 1.1.3:src/Mod/CAM/Path/...`), not from the working tree.
+- Toolbits come from the asset manager (`Path.Tool.camassets`), active library at
+  `~/.local/share/FreeCAD/v1-1/CamAssets`. The old `Toolbits/` tree in the synced folder
+  is not used by FreeCAD.
+
+## Files
+
+| File | Role |
+|---|---|
+| `InitGui.py` | commands, registration, menu/toolbar/global toolbar/pie menu (restart needed) |
+| `panels.py`, `project.py`, `Init.py` | Create Panel, parameter spreadsheet, alias observer |
+| `drawers.py` | drawer model (Part + holder + bodies), dialog, recreate, drawer discovery |
+| `cam.py` | Drawer CAM Job: validation, sheet Jobs, Slot ops, Tags, post-processing, dialog |
+| `nesting.py` | pure-Python sheet nesting and cut-line/tab planning (no FreeCAD imports) |
+| `reload.py` | hot-reload helpers (`reload_all()`), smoke helpers |
+| `test_cam.py` | headless end-to-end test (drawers, nesting, Jobs, G-code, recreate) |
+| `test_cam_gui.py` | offscreen GUI smoke test (dialog widgets, view providers) |
+| `drawers.md` | drawer feature spec (the authoritative description of the joinery) |
+
+## Tests (run both before delivering CAM or drawer changes)
+
+```
+~/Applications/FreeCAD.AppImage --console --module-path ~/Projects/FreeCAD/Mod/Lumberjack \
+    ~/Projects/FreeCAD/Mod/Lumberjack/test_cam.py
+QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
+    ~/Projects/FreeCAD/Mod/Lumberjack ~/Projects/FreeCAD/Mod/Lumberjack/test_cam_gui.py
+```
+
+- Console mode: `print()` is swallowed, use `FreeCAD.Console.PrintMessage`; a script must
+  end with `sys.exit()` or FreeCAD waits at the interactive prompt.
+- GUI mode: stdout/stderr go to the report view; log to a file (see `test_cam_gui.py`,
+  result in `/tmp/lj_cam_gui/RESULT`). The forced shutdown may segfault inside FreeCAD's
+  Measure module after the checks ran; that is not a test failure.
+- Filter recompute progress noise: `sed -E 's/\([0-9]+ %\)//g; s/Recompute\.*//g'`.
+- `nesting.py` can be exercised with plain `python3` (it has a `__main__` self-check).
+
+## Conventions that matter
+
+- Drawer bodies are centred slabs positioned by expression-driven `Placement.Base` only;
+  all CAM geometry is computed in body-local coordinates and mapped through the model
+  clone's Placement. Keep it that way.
+- Everything parametric goes through the `<Part>_Params` holder with expressions
+  (ternaries for live switches such as `overlap_box` and `t_bottom < t_side`). The
+  bottom rabbet is switched off via an expression on the pocket's `Suppressed` property.
+- Drawer detection is by structure (holder with `width`, `t_side`, `t_bottom`,
+  `overlap_box`; bodies named `<Part>_<Role>`), see `drawers.drawer_holder` /
+  `find_drawer_part`. Jobs carry `LumberjackDrawers`, `LumberjackThickness`,
+  `LumberjackSheet`.
+- CAM layout frame: `u` right, `v` away from the reference edge; mapped to Job XY by
+  `cam.layout_to_job` depending on the origin corner setting. Never mix the frames.
+- Preferences: `FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Lumberjack")`,
+  keys prefixed per feature (`drawer_*`, `cam_*`); save only after validation.
+- Commit messages: conventional `feat:`/`fix:` prefixes, concise body.
+
+## CAM API gotchas (FreeCAD 1.1.3)
+
+- Fresh ops bind `StartDepth`/`FinalDepth`/`StepDown` to SetupSheet expressions; call
+  `op.setExpression(prop, None)` before assigning values.
+- `Slot` custom points need identical Z; force `p2.z = p1.z`.
+- `Path.Dressup.Tags.Create` only removes its base op from `Operations.Group` via the GUI
+  view provider; do it explicitly (headless would post the cut twice). Tag solids are
+  `Width + tool_d` wide; closer tabs get auto-disabled.
+- `Job.PostProcessor` is an enumeration of `Path.Preferences.allEnabledPostProcessors()`.
+- `Job.Create` adds a default tool controller; clear all tools before adding ours, and
+  remove tool bits via `tool.Proxy.onDelete(tool)` (deletes the imported shape body).
+- `Job.Proxy.onDelete` only walks `Operations.Group`; delete dress-up bases yourself.
+- Object names that are unit symbols (`H`, `m`, `A`, ...) break expressions.
+- Legacy post scripts pop an editor in GUI mode unless `--no-show-editor` is passed.
+
+## Hazards
+
+- This folder is Syncthing-synced with other devices. Stale copies have been pushed over
+  the working tree before (`*.sync-conflict-*` files appear). Check `git status` at the
+  start of a session and after breaks; restore from git, never merge blindly.
+- Recreating a drawer replaces its bodies; anything linking to the old bodies (CAM Jobs,
+  measurements) must be regenerated.
