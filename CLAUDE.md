@@ -96,8 +96,9 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   instead of `not obj.InList` when deciding whether a tool bit is still referenced.
 - FreeCAD reuses freed internal names (`Job`, `CamJobs`); never identify old objects by
   name across a delete/recreate cycle in tests.
-- TechDraw (1.1.3): the shipped default template is a blank A4 landscape without title
-  block or editable texts. `DrawViewSymbol` SVGs with `width/height` in `mm` and a
+- TechDraw (1.1.3): pages use our own blank A4 portrait template
+  (`templates/A4_Portrait_Blank.svg`); the user's default template has a frame/title
+  block that is unwanted noise. `DrawViewSymbol` SVGs with `width/height` in `mm` and a
   matching `viewBox` render 1:1 in page millimetres; the view's `X`/`Y` is the symbol
   centre (page origin bottom-left, Y up). Page size is `page.PageWidth/PageHeight`
   (attributes, not methods). Removing a page removes its template. Page exports:

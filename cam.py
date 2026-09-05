@@ -916,15 +916,12 @@ def page_view(page, role):
     return None
 
 
-def default_template_path():
-    """The TechDraw default template (user preference, else the shipped A4 landscape)."""
-    pref = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/TechDraw/Files")
-    path = pref.GetString("TemplateFile", "")
-    if not path or not os.path.isfile(path):
-        path = os.path.join(
-            FreeCAD.getResourceDir(), "Mod", "TechDraw", "Templates", "Default_Template_A4_Landscape.svg"
-        )
-    return path
+BLANK_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "A4_Portrait_Blank.svg")
+
+
+def blank_template_path():
+    """The shipped blank A4 portrait template (no frame, no title block)."""
+    return BLANK_TEMPLATE
 
 
 def _remove_page(doc, page):
@@ -943,14 +940,14 @@ def _remove_page(doc, page):
 def make_sheet_page(doc, frame, sheet, refs, settings, title, subtitle):
     """
     A TechDraw page inside the sheet frame: title, the sheet with panels, cuts, tabs and
-    inline labels, and a legend with one label strip per panel.
+    inline labels, and a legend with one label strip per panel, on a blank portrait page.
     """
     import TechDraw  # noqa: F401  (registers the TechDraw types)
 
     page = doc.addObject("TechDraw::DrawPage", "SheetPage")
     page.Label = title
     template = doc.addObject("TechDraw::DrawSVGTemplate", "SheetTemplate")
-    template.Template = default_template_path()
+    template.Template = blank_template_path()
     page.Template = template
     doc.recompute()  # template read -> page size known
     page_w, page_h = float(page.PageWidth), float(page.PageHeight)
