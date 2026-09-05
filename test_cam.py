@@ -186,7 +186,15 @@ def main():
     by_t = {}
     for r in results:
         by_t.setdefault(r.thickness, []).append(r)
-    check(sorted(by_t) == [8.0, 12.0, 18.0], "one thickness group per panel thickness: {}".format(sorted(by_t)))
+    check(sorted(by_t) == [8.0, 12.0], "drawer fronts skipped by default: {}".format(sorted(by_t)))
+    check(not [c for r in results for c in r.job.Model.Group if c.Label.endswith("DrawerFront")], "no front on any sheet")
+    s.skip_drawer_front = False
+    results, problems, warnings = cam.run([(part, holder), (part_c, holder_c)], s)
+    check(not problems, "run with fronts ok")
+    by_t = {}
+    for r in results:
+        by_t.setdefault(r.thickness, []).append(r)
+    check(sorted(by_t) == [8.0, 12.0, 18.0], "with fronts: one thickness group per panel thickness: {}".format(sorted(by_t)))
     check(all(len(v) == 1 for v in by_t.values()), "each thickness fits one sheet")
     r12 = by_t[12.0][0]
     job = r12.job

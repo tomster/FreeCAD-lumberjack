@@ -133,6 +133,8 @@ The dialog asks for (all values are remembered):
 - **Origin corner**: *top-left* (zero at the far-left corner, Y negative towards you) or
   *bottom-left* (zero at the near-left corner, Y positive). Panels hug the two sheet edges
   at that corner, which are the clamping edges.
+- **Skip drawer fronts** (default on): fronts are plain rectangles, usually of another
+  material, and are left out of the Jobs.
 - **Post processor** (default `uccnc`) and whether to **write the G-code now**.
 
 Nesting (`nesting.py`): the panels of all selected drawers are grouped by thickness and

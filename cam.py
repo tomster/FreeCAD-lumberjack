@@ -323,6 +323,7 @@ class CamSettings:
         self.sheet_h = 1080.0
         self.clamp_h = 20.0
         self.origin = ORIGIN_TOP_LEFT
+        self.skip_drawer_front = True  # fronts are usually other material, plain rectangles
         self.post = ""
         self.spindle = 0.0
         self.feed_xy = 0.0
@@ -351,6 +352,8 @@ def validate_drawer(part, params, settings):
     clearance = nesting.edge_clearance(d)
     max_u, max_v = settings.sheet_w - clearance, settings.sheet_h - clearance
     for role, _body in panels:
+        if role == "DrawerFront" and settings.skip_drawer_front:
+            continue
         frame = panel_frame(role, params)
         for region in pocket_regions(role, params, frame):
             try:
@@ -845,12 +848,14 @@ class PanelRef:
         return (self.part.Name, self.role)
 
 
-def collect_items(drawers):
+def collect_items(drawers, skip_drawer_front=True):
     """nesting.Item list for the panels of [(part, holder)]."""
     items = []
     for part, holder in drawers:
         params = DrawerParams(holder)
         for role, body in drawer_panels(part):
+            if role == "DrawerFront" and skip_drawer_front:
+                continue
             frame = panel_frame(role, params)
             ref = PanelRef(part, holder, params, role, body, frame)
             items.append(nesting.Item(ref.key, frame.L, frame.W, frame.t, data=ref))
@@ -997,7 +1002,10 @@ def run(drawers, settings):
     if problems:
         return [], problems, warnings
 
-    items = collect_items(drawers)
+    items = collect_items(drawers, settings.skip_drawer_front)
+    if not items:
+        problems.append("nothing to cut (only drawer fronts selected and those are skipped)")
+        return [], problems, warnings
     nested = []  # (thickness, [Sheet])
     for group in group_by_thickness(items):
         try:
@@ -1144,6 +1152,12 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
         self._row(machine_layout, "Post processor", self.post_combo)
         layout.addWidget(machine_group)
 
+        self.skip_front_check = QtWidgets.QCheckBox(
+            "Skip drawer fronts (plain rectangles, usually other material)"
+        )
+        self.skip_front_check.setChecked(_get_last_bool(_pref("skip_front"), True))
+        layout.addWidget(self.skip_front_check)
+
         self.write_check = QtWidgets.QCheckBox("Write G-code files now")
         self.write_check.setChecked(_get_last_bool(_pref("write_gcode"), True))
         layout.addWidget(self.write_check)
@@ -1183,6 +1197,7 @@ class CreateDrawerCamDialog(QtWidgets.QDialog):
         s.sheet_h = self._raw(self.sheet_h)
         s.clamp_h = self._raw(self.clamp_h)
         s.origin = self.origin_combo.currentData() or ORIGIN_TOP_LEFT
+        s.skip_drawer_front = self.skip_front_check.isChecked()
         s.post = self.post_combo.currentText()
         s.spindle = float(self.spindle.value())
         s.feed_xy = self._raw(self.feed_xy)
@@ -1198,6 +1213,7 @@ def remember_settings(s):
     _set_last_str(_pref("sheet_h"), str(s.sheet_h))
     _set_last_str(_pref("clamp_h"), str(s.clamp_h))
     _set_last_str(_pref("origin"), s.origin)
+    _set_last_bool(_pref("skip_front"), s.skip_drawer_front)
     _set_last_str(_pref("post"), s.post)
     _set_last_str(_pref("spindle"), str(s.spindle))
     _set_last_str(_pref("feed_xy"), str(s.feed_xy))
