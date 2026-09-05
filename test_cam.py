@@ -200,6 +200,31 @@ def main():
     job = r12.job
     check(len(job.Model.Group) == 9, "12 mm sheet holds 4 + 5 panels ({})".format(len(job.Model.Group)))
     check(sorted(job.LumberjackDrawers) == sorted([part.Name, part_c.Name]), "job records both drawers")
+
+    # --- container ------------------------------------------------------------------
+    import naming
+    check(naming.group_name(["Kitchen_Left_Top", "Kitchen_Left_Bottom", "Kitchen_Right_Top"]) == "Kitchen Left Bottom/Top, Right Top", "naming factors common tokens")
+    check(naming.group_name(["Left_Drawer", "Right_Drawer"]) == "Left/Right Drawer", "naming factors the common suffix")
+    check(naming.group_name(["Drawer001", "Drawer002", "Drawer003"]) == "Drawer 001-003", "naming compresses numeric runs")
+    check(naming.group_name(["Drawer", "Drawer001"]) == "Drawer " + naming.TIMES + "2", "naming counts when a label is a prefix of another")
+    containers = [o for o in doc.Objects if hasattr(o, cam.CAM_GROUP_PROP)]
+    check(len(containers) == 1, "one CAM container ({})".format(len(containers)))
+    container = containers[0]
+    check(container.TypeId == "App::Part", "container is an App::Part")
+    check(container.Label == "CAM Captured/Drawer", "container named after the drawers: {}".format(container.Label))
+    check(sorted(container.LumberjackDrawers) == sorted([part.Name, part_c.Name]), "container records its drawers")
+    check(all(r.job in container.Group for r in results), "all jobs live in the container")
+    check(all(r.container == container for r in results), "results reference the container")
+    check(job.Model in container.Group and all(c in container.Group for c in job.Model.Group), "job resources moved into the container")
+    check(job.Stock in container.Group and job.Tools.Group[0] in container.Group, "stock and tool controller in the container")
+    check(all(not any(o in container.Group for o in p.Group) for p in (part, part_c)), "drawer bodies stay in their drawers")
+    check(job.Label == "12mm sheet 1", "sheet with all drawers is labelled plainly: {}".format(job.Label))
+    j18 = by_t[18.0][0].job
+    check(j18.Label == "18mm sheet 1 (Drawer)", "sheet with a subset names its drawers: {}".format(j18.Label))
+    check(cam.find_lumberjack_jobs(doc, [part.Name]) and not [o for o in cam.find_lumberjack_jobs(doc, [part.Name]) if o == container], "container is not mistaken for a job")
+    check(cam.find_cam_groups(doc, [part_c.Name]) == [container], "container found by drawer name")
+    check(cam.cam_group_of(job) == container, "cam_group_of resolves the job's container")
+    check([p.Name for p in drawers._job_drawer_parts(container)] == sorted([part.Name, part_c.Name]), "container resolves to its drawers")
     check(len(job.Tools.Group) == 1 and abs(float(job.Tools.Group[0].Tool.Diameter) - d) < 1e-6, "one tool controller")
     sb = job.Stock.Shape.BoundBox
     check(abs(sb.XMin) < 1e-6 and abs(sb.XMax - 630) < 1e-6 and abs(sb.YMax) < 1e-6 and abs(sb.YMin + 1080) < 1e-6
@@ -257,7 +282,7 @@ def main():
     # --- G-code ---------------------------------------------------------------------
     check(r12.gcode_files, "gcode written")
     g = r12.gcode_files[0]
-    check(os.path.basename(g) == "test_CAM_12mm_1.nc", "gcode name {}".format(os.path.basename(g)))
+    check(os.path.basename(g) == "test_Captured_Drawer_12mm_1.nc", "gcode name {}".format(os.path.basename(g)))
     text = open(g).read()
     check("G1" in text and "M6" in text, "gcode has moves and a tool change")
     check(abs(min_z_in_gcode(g) + 12.2) < 1e-3, "deepest Z is -12.2")
@@ -269,9 +294,13 @@ def main():
 
     # --- re-run replaces the jobs without leaking -----------------------------------
     n_after = len(doc.Objects)
+    container.Label = "CAM my kitchen"
     results2, problems, _ = cam.run([(part, holder), (part_c, holder_c)], s)
     check(not problems, "re-run ok")
     check(len(doc.Objects) == n_after, "re-run replaces jobs without leaking objects ({} -> {})".format(n_after, len(doc.Objects)))
+    check(results2[0].container == container and container.Label == "CAM my kitchen", "same drawers: container reused, rename kept")
+    check(os.path.basename(results2[0].gcode_files[0]).startswith("test_my_kitchen_"), "gcode named after the renamed container")
+    check(len(container.Group) >= len(results2) and all(r.job in container.Group for r in results2), "new jobs in the reused container")
     check(len(cam.find_lumberjack_jobs(doc, [part.Name])) == 3, "three jobs involve the first drawer")
     results3, problems, warn3 = cam.run([(part_c, holder_c)], s)
     check(not problems, "single drawer run ok")
@@ -279,6 +308,39 @@ def main():
     check(sorted(r.thickness for r in results3) == [8.0, 12.0, 18.0], "shared drawers are re-nested together")
     check(len(cam.find_lumberjack_jobs(doc, [part.Name])) == 3, "the other drawer keeps full job coverage")
     check(len(doc.Objects) == n_after, "still no leaked objects")
+    check(results3[0].container == container, "expanded selection reuses the container")
+
+    # a run on a single drawer that never shared a container gets its own container
+    part_solo = drawers.create_drawer("Solo", DRAWER_C)
+    holder_solo = cam.drawer_holder(part_solo)
+    n_before_solo = len(doc.Objects)
+    results_solo, problems, _ = cam.run([(part_solo, holder_solo)], s)
+    check(not problems, "solo run ok")
+    solo_container = results_solo[0].container
+    check(solo_container != container and solo_container.Label == "CAM Solo", "solo drawer gets its own container: {}".format(solo_container.Label))
+    # nesting solo with the others merges into a new container and removes the old ones
+    results_all, problems, warn_all = cam.run([(part, holder), (part_solo, holder_solo)], s)
+    check(not problems, "merged run ok")
+    check(any("Captured" in w for w in warn_all), "drawer sharing the old container is pulled in")
+    merged = results_all[0].container
+    check(merged.Label == "CAM Captured/Drawer/Solo", "merged container named after all three: {}".format(merged.Label))
+    check([o for o in doc.Objects if hasattr(o, cam.CAM_GROUP_PROP)] == [merged], "old containers removed, only the merged one remains")
+    check(sorted(merged.LumberjackDrawers) == sorted([part.Name, part_c.Name, part_solo.Name]), "merged container records all drawers")
+    check(all(r.job in merged.Group for r in results_all), "all merged jobs in the merged container")
+    # back to the two original drawers: solo is expanded in again (shared container)
+    results_two, problems, warn_two = cam.run([(part, holder), (part_c, holder_c)], s)
+    check(not problems and results_two[0].container == merged, "container fully covered: drawers sharing it are re-nested along")
+    check(any("Solo" in w for w in warn_two), "expansion reported")
+    n12 = sum(len(r.job.Model.Group) for r in results_two if r.thickness == 12.0)
+    check(n12 == 4 + 5 + 5, "all three drawers' 12 mm panels are nested ({})".format(n12))
+    drawers.delete_drawer(part_solo)
+    results_two, problems, _ = cam.run([(part, holder), (part_c, holder_c)], s)
+    check(not problems, "run after deleting a drawer of the container ok")
+    container = results_two[0].container
+    check(container.Label == "CAM Captured/Drawer" and len([o for o in doc.Objects if hasattr(o, cam.CAM_GROUP_PROP)]) == 1, "deleted drawer dropped, fresh container: {}".format(container.Label))
+    n_after = len(doc.Objects)
+    results2, problems, _ = cam.run([(part, holder), (part_c, holder_c)], s)
+    check(not problems and len(doc.Objects) == n_after, "stable object count after cleanup")
 
     # --- bottom-left origin: mirrored layout, Y positive ------------------------------
     sb_ = cam.CamSettings()

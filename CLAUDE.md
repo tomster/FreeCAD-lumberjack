@@ -24,6 +24,7 @@ code in this folder.
 | `drawers.py` | drawer model (Part + holder + bodies), dialog, recreate, drawer discovery |
 | `cam.py` | Drawer CAM Job: validation, sheet Jobs, Slot ops, Tags, post-processing, dialog |
 | `nesting.py` | pure-Python sheet nesting and cut-line/tab planning (no FreeCAD imports) |
+| `naming.py` | pure-Python compact group names for CAM containers (`python3 naming.py` self-checks) |
 | `reload.py` | hot-reload helpers (`reload_all()`), smoke helpers |
 | `test_cam.py` | headless end-to-end test (drawers, nesting, Jobs, G-code, recreate) |
 | `test_cam_gui.py` | offscreen GUI smoke test (dialog widgets, view providers) |
@@ -57,7 +58,11 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
 - Drawer detection is by structure (holder with `width`, `t_side`, `t_bottom`,
   `overlap_box`; bodies named `<Part>_<Role>`), see `drawers.drawer_holder` /
   `find_drawer_part`. Jobs carry `LumberjackDrawers`, `LumberjackThickness`,
-  `LumberjackSheet`.
+  `LumberjackSheet`; the `App::Part` container of a run carries `LumberjackCamGroup`
+  and `LumberjackDrawers` (so selecting it resolves to its drawers). Jobs are told apart
+  from containers by having `Operations`.
+- A container is reused only when its drawer set equals the run's (keeps user renames);
+  otherwise emptied containers are removed and a new one is named via `naming.group_name`.
 - CAM layout frame: `u` right, `v` away from the reference edge; mapped to Job XY by
   `cam.layout_to_job` depending on the origin corner setting. Never mix the frames.
 - Preferences: `FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Lumberjack")`,
@@ -76,6 +81,14 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
 - `Job.Create` adds a default tool controller; clear all tools before adding ours, and
   remove tool bits via `tool.Proxy.onDelete(tool)` (deletes the imported shape body).
 - `Job.Proxy.onDelete` only walks `Operations.Group`; delete dress-up bases yourself.
+- `App::Part.addObject(job)` pulls the Job's whole tree of *local* links (stock, tools,
+  ops, dress-ups, clones) into the container; objects created afterwards stay outside and
+  trip the link-scope check ("Link(s) ... go out of the allowed scope"). Add the Job to
+  the container last. Global links (Draft clone `Objects`) may cross containers.
+- Inside a container, `obj.InList` includes the container itself; use `cam._users_of`
+  instead of `not obj.InList` when deciding whether a tool bit is still referenced.
+- FreeCAD reuses freed internal names (`Job`, `CamJobs`); never identify old objects by
+  name across a delete/recreate cycle in tests.
 - Object names that are unit symbols (`H`, `m`, `A`, ...) break expressions.
 - Legacy post scripts pop an editor in GUI mode unless `--no-show-editor` is passed.
 

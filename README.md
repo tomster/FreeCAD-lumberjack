@@ -144,7 +144,13 @@ separates both and its tabs hold both. Edges flush with the sheet's top and left
 not cut at all, so those edges are where the sheet gets clamped; the summary lists the
 positions where cuts do reach those edges. Panels that do not fit go onto another sheet.
 
-Per sheet one Job labelled `CAM <t>mm sheet <n> (<drawers>)`:
+All Jobs of one run are collected in an `App::Part` container labelled `CAM <name>`,
+where `<name>` describes the selected drawers compactly (`naming.py`): shared name parts
+are factored out and numbered series are collapsed, e.g. `Kitchen_Left_Top`,
+`Kitchen_Left_Bottom`, `Kitchen_Right_Top` become `CAM Kitchen Left Bottom/Top, Right Top`,
+and `Drawer001` .. `Drawer003` become `CAM Drawer 001-003`. Selecting the container selects
+all its drawers for the command. Per sheet one Job labelled `<t>mm sheet <n>` (plus the
+drawer names when the sheet holds only some of the container's drawers):
 
 - **Coordinates**: zero is the chosen sheet corner, X to the right, Z = 0 on the sheet
   surface; Y is negative (top-left origin) or positive (bottom-left origin). Cut a blank
@@ -158,10 +164,14 @@ Per sheet one Job labelled `CAM <t>mm sheet <n> (<drawers>)`:
 - **One Slot per merged cut line** (through cut, 0.2 mm into the spoilboard) with a
   **Tags** dress-up: tabs at 1/3 and 2/3 of every panel edge on that line, 10 mm wide,
   3 mm high (at most half the thickness).
-- G-code at `<document folder>/<Document>_CAM_<t>mm_<n>.nc` (also set as the Job output).
+- G-code at `<document folder>/<Document>_<container name>_<t>mm_<n>.nc` (also set as the
+  Job output).
 
 Running the command again re-nests and **replaces** the Jobs of the selected drawers
-(and Jobs they shared with other drawers). Manual changes to those Jobs are lost.
+(and Jobs they shared with other drawers, so a container is always regenerated as a
+whole). Manual changes to those Jobs are lost. The container is kept when the set of
+drawers is unchanged, so you may rename it; when the set changes a fresh container with a
+generated name replaces the old ones.
 
 Half-lap joinery is not modelled in the drawer bodies; the CAM code synthesises it:
 the full-length panels (Front/Back, or SideL/SideR when a drawer front exists) get a
@@ -276,6 +286,7 @@ Lumberjack/
 ├── drawers.py        # Parametric drawer (Std_Part with panel bodies) and dialog
 ├── cam.py            # Drawer CAM Job generation (operations, tabs, G-code)
 ├── nesting.py        # Sheet nesting and cut-line planning (pure Python)
+├── naming.py         # Compact names for CAM containers (pure Python)
 ├── reload.py         # Development helpers: hot-reload modules, smoke tests
 ├── test_cam.py       # Headless end-to-end test for cam.py
 ├── test_cam_gui.py   # Offscreen GUI smoke test for cam.py

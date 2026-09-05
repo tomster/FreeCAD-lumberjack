@@ -71,9 +71,15 @@ def reload_nesting():
     return reload_module("nesting")
 
 
+def reload_naming():
+    """Reload the naming module (compact names for CAM containers)."""
+    return reload_module("naming")
+
+
 def reload_cam():
-    """Reload the cam module (drawer CAM job generation); reloads nesting first."""
+    """Reload the cam module (drawer CAM job generation); reloads nesting and naming first."""
     reload_nesting()
+    reload_naming()
     return reload_module("cam")
 
 

@@ -48,6 +48,7 @@ except ImportError:  # pragma: no cover - headless without Gui module
 
 import drawers as _drawers
 import nesting
+import naming
 from drawers import _get_last_bool, _get_last_str, _set_last_bool, _set_last_str
 
 Vector = FreeCAD.Vector
@@ -497,6 +498,59 @@ def find_lumberjack_jobs(doc, part_names):
     return jobs
 
 
+CAM_GROUP_PROP = "LumberjackCamGroup"
+
+
+def find_cam_groups(doc, part_names):
+    """Lumberjack CAM containers (App::Part) involving any of the given drawer Part names."""
+    names = set(part_names)
+    return [
+        obj
+        for obj in doc.Objects
+        if hasattr(obj, CAM_GROUP_PROP)
+        and set(getattr(obj, "LumberjackDrawers", []) or []) & names
+    ]
+
+
+def cam_group_of(job):
+    """The Lumberjack CAM container holding the Job, or None."""
+    for parent in job.InList:
+        if hasattr(parent, CAM_GROUP_PROP) and job in (getattr(parent, "Group", []) or []):
+            return parent
+    return None
+
+
+def cam_group_name(drawers):
+    """Compact name for a collection of drawers [(part, holder)], see naming.group_name."""
+    return naming.group_name([part.Label for part, _h in drawers])
+
+
+def _create_cam_group(doc, drawers):
+    """Create the App::Part container that collects the Jobs of one CAM run."""
+    container = doc.addObject("App::Part", "CamJobs")
+    container.Label = "CAM " + cam_group_name(drawers)
+    container.addProperty(
+        "App::PropertyBool", CAM_GROUP_PROP, "Lumberjack", "Container of Lumberjack CAM Jobs"
+    )
+    setattr(container, CAM_GROUP_PROP, True)
+    container.addProperty(
+        "App::PropertyStringList",
+        "LumberjackDrawers",
+        "Lumberjack",
+        "Names of the drawer Parts whose Jobs live in this container",
+    )
+    container.LumberjackDrawers = sorted(part.Name for part, _h in drawers)
+    return container
+
+
+def _remove_cam_group_if_empty(container):
+    doc = container.Document
+    if list(container.Group):
+        return False
+    doc.removeObject(container.Name)
+    return True
+
+
 def delete_job(job):
     """Remove a CAM Job with all its resources (tools, bits, models, stock, operations)."""
     import Path.Base.Util as PathUtil
@@ -606,8 +660,17 @@ def _clear_tools(job, doc):
         tool = getattr(tc, "Tool", None)
         PathUtil.clearExpressionEngine(tc)
         doc.removeObject(tc.Name)
-        if tool is not None and not tool.InList:
+        if tool is not None and not _users_of(tool):
             _remove_toolbit(doc, tool)
+
+
+def _users_of(obj):
+    """Objects linking to obj other than the groups/containers that merely hold it."""
+    return [
+        o
+        for o in obj.InList
+        if not (hasattr(o, "Group") and obj in (o.Group or []) and not hasattr(o, "Tool"))
+    ]
 
 
 def _remove_toolbit(doc, tool):
@@ -878,28 +941,33 @@ class SheetJobResult:
         self.cut_slots = 0
         self.disabled_tabs = []
         self.gcode_files = []
+        self.container = None
 
     @property
     def drawers(self):
         return sorted({p.item.data.part.Label for p in self.sheet.items})
 
 
-def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir):
-    """Create one CAM Job for one nested sheet."""
+def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir, container):
+    """Create one CAM Job for one nested sheet inside the run's container."""
     refs = {p.item.key: p.item.data for p in sheet.items}
     bodies = [p.item.data.body for p in sheet.items]
-    drawer_labels = sorted({r.part.Label for r in refs.values()})
-    label = "CAM {:g}mm sheet {} ({})".format(thickness, sheet_no, ", ".join(drawer_labels))
+    drawer_names = sorted({r.part.Name for r in refs.values()})
+    label = "{:g}mm sheet {}".format(thickness, sheet_no)
+    if set(drawer_names) != set(container.LumberjackDrawers):  # only some of the drawers
+        label += " ({})".format(", ".join(sorted({r.part.Label for r in refs.values()})))
     job = _create_job(doc, bodies, label)
-    job.LumberjackDrawers = sorted({r.part.Name for r in refs.values()})
+    job.LumberjackDrawers = drawer_names
     job.LumberjackThickness = float(thickness)
     job.LumberjackSheet = int(sheet_no)
+    group_slug = _sanitize(re.sub(r"^CAM\s+", "", container.Label))
     out_path = os.path.join(
         out_dir,
-        "{}_CAM_{:g}mm_{}.nc".format(_sanitize(doc.Label), thickness, sheet_no),
+        "{}_{}_{:g}mm_{}.nc".format(_sanitize(doc.Label), group_slug, thickness, sheet_no),
     )
     _configure_job(job, settings, out_path)
     result = SheetJobResult(job, thickness, sheet)
+    result.container = container
 
     # Place every model clone where the nest put its panel.
     clones = {}
@@ -960,6 +1028,12 @@ def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir):
             result.disabled_tabs.append((name, list(tags.Disabled)))
     doc.recompute()
 
+    # Move the Job into the container only now: App::Part.addObject pulls the whole tree
+    # of local links (stock, tools, operations, dress-ups, clones) along, but objects
+    # created later would stay outside and trip the link-scope check.
+    container.addObject(job)
+    doc.recompute()
+
     if settings.write_gcode:
         result.gcode_files = post_process(job, doc)
     return result
@@ -969,8 +1043,10 @@ def run(drawers, settings):
     """
     Validate, nest and build the sheet Jobs for [(part, holder)].
 
-    Existing Lumberjack Jobs involving any of the drawers are replaced; drawers that shared
-    those Jobs are re-nested along (otherwise their panels would lose their Job).
+    Existing Lumberjack Jobs and containers involving any of the drawers are replaced;
+    drawers that shared them are re-nested along (otherwise their panels would lose their
+    Job). The Jobs go into one App::Part container named after the drawers; a container
+    covering exactly the same drawers is reused, so a renamed container keeps its name.
     Returns (results, problems, warnings). Nothing is modified when problems is non-empty.
     """
     problems = []
@@ -979,16 +1055,22 @@ def run(drawers, settings):
     doc = drawers[0][0].Document
     names = {part.Name for part, _h in drawers}
     extra = []
-    for job in find_lumberjack_jobs(doc, names):
-        for name in list(getattr(job, "LumberjackDrawers", []) or []):
-            if name in names:
-                continue
+    while True:  # expand until every touched Job and container is fully covered
+        involved = set()
+        for obj in find_lumberjack_jobs(doc, names) + find_cam_groups(doc, names):
+            involved.update(getattr(obj, "LumberjackDrawers", []) or [])
+        added = False
+        for name in sorted(involved - names):
             other = doc.getObject(name)
             other_holder = _drawers.drawer_holder(other) if other is not None else None
+            names.add(name)  # even if the drawer is gone: nothing more to expand from it
             if other_holder is not None:
                 drawers.append((other, other_holder))
-                names.add(name)
                 extra.append(other.Label)
+                added = True
+        if not added:
+            break
+    names = {part.Name for part, _h in drawers}
     if extra:
         warnings.append(
             "also re-nested drawers that shared sheets with the selection: {}".format(
@@ -1017,16 +1099,31 @@ def run(drawers, settings):
     if problems:
         return [], problems, warnings
 
+    old_groups = {g.Name: g for g in find_cam_groups(doc, names)}
     for job in find_lumberjack_jobs(doc, names):
+        group = cam_group_of(job)
+        if group is not None:
+            old_groups[group.Name] = group
         delete_job(job)
+    container = None
+    for group in list(old_groups.values()):
+        if container is None and set(group.LumberjackDrawers) == names:
+            container = group  # same drawers: keep it (and its possibly edited label)
+        elif not _remove_cam_group_if_empty(group):
+            warnings.append(
+                "kept container '{}': it holds objects not created by Lumberjack".format(group.Label)
+            )
+    if container is None:
+        container = _create_cam_group(doc, drawers)
 
     out_dir = output_dir(doc)
     results = []
     for thickness, sheets in nested:
         for sheet in sheets:
             results.append(
-                build_sheet_job(doc, sheet, thickness, sheet.index + 1, settings, out_dir)
+                build_sheet_job(doc, sheet, thickness, sheet.index + 1, settings, out_dir, container)
             )
+    doc.recompute()
     return results, problems, warnings
 
 
@@ -1238,6 +1335,12 @@ def _message(title, text, error=False):
 def summarize_results(results, warnings, origin=ORIGIN_TOP_LEFT):
     lines = []
     x_edge = edge_name_along_x(origin)
+    containers = []
+    for r in results:
+        if r.container is not None and r.container not in containers:
+            containers.append(r.container)
+    for c in containers:
+        lines.append("Jobs collected in '{}'".format(c.Label))
     for r in results:
         s = r.sheet
         lines.append(

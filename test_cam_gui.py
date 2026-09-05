@@ -97,6 +97,19 @@ def main():
     d2, rej2 = cam.selected_drawers()
     check(len(d2) == 1 and d2[0][0] == part and not rej2, "job selection resolves to the drawer")
 
+    # Jobs live in an App::Part container named after the drawer; selecting it works too.
+    container = res.container
+    check(container is not None and container.TypeId == "App::Part", "jobs collected in an App::Part")
+    check(container.Label == "CAM Schublade", "container label: {}".format(container.Label))
+    check(all(r.job in container.Group for r in results), "all jobs in the container")
+    check(container.ViewObject is not None and container.ViewObject.Visibility, "container visible")
+    check(not any(o.isDerivedFrom("App::DocumentObject") and getattr(o, "State", None) and "Invalid" in o.State for o in container.Group),
+          "no invalid objects in the container (link scope)")
+    FreeCADGui.Selection.clearSelection()
+    FreeCADGui.Selection.addSelection(doc.Name, container.Name)
+    d3, rej3 = cam.selected_drawers()
+    check(len(d3) == 1 and d3[0][0] == part and not rej3, "container selection resolves to the drawer")
+
     doc.save()
 
 
