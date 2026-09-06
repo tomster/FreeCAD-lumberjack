@@ -73,7 +73,10 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   `length_expr`, `cam.Region(closed=True)` — passes end a tool radius inside instead of
   overshooting). Handle slots (`handle_slot` + three lengths) are a stadium sketch
   (`_add_slot`, endpoint tangencies like the Sketcher slot tool) pocketed through each
-  side; CAM uses `Region(shape="slot")`, whose passes end on the inset arc.
+  side. CAM cuts them as a `Path.Op.Profile` (Side Inside, UseComp) on the clone's four
+  top-face slot edges, found by geometry in `_slot_top_edges`, plus a Tags dress-up with a
+  tab on each straight segment. Op label `<Part>_<Role>_HandleSlot` — not `_Handle`,
+  which is the body feature's label and FreeCAD auto-suffixes duplicate labels.
 - Holder properties added after a drawer was created are optional on read:
   `read_drawer_values` falls back to `_PROP_DEFAULTS`, `cam.DrawerParams` to `getattr`
   defaults; `create_parameter_holder` fills unsupplied lengths with the defaults so a
@@ -130,6 +133,8 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   pull in views/template (their links are not local scope); that is fine.
 - Object names that are unit symbols (`H`, `m`, `A`, ...) break expressions.
 - Legacy post scripts pop an editor in GUI mode unless `--no-show-editor` is passed.
+- A Profile op's `Base` is a list (LinkSubList); dress-ups have a single `Base` object.
+  `_delete_job` and the tests rely on that to tell them apart.
 
 ## Hazards
 

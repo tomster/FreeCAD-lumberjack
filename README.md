@@ -209,9 +209,11 @@ File > Export or the TechDraw toolbar print it.
   Passes overlap by 50 % of the tool diameter and overshoot open ends; the stopped side
   grooves of the tongue-and-dado variants end with the tool tangent to the stop. The
   outer-face laps of the *flush* tongue and dado are not machined; the run summary lists
-  them as a manual cut. Handle slots are milled through with parallel passes whose ends
-  follow the semicircles (the tool centre runs on the arc offset inwards by the tool
-  radius), leaving scallops of well under a millimetre at the ends.
+  them as a manual cut.
+- **Handle slots** are cut as a through **Profile** of the slot's outline (the four top
+  edges of the model clone, inside, tool-compensated) with a **Tags** dress-up: one tab in
+  the middle of each straight segment holds the waste piece; knock it out and clean the
+  tabs by hand. The bit must be narrower than the slot diameter.
 - **One Slot per merged cut line** (through cut, 0.2 mm into the spoilboard) with a
   **Tags** dress-up: tabs at 1/3 and 2/3 of every panel edge on that line, 10 mm wide,
   3 mm high (at most half the thickness).

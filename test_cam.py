@@ -105,19 +105,6 @@ def test_geometry(cam, nesting):
         raise AssertionError("ToolTooWide not raised for a short stopped pocket")
     except cam.ToolTooWide:
         FreeCAD.Console.PrintMessage("  ok: short stopped pocket rejected\n")
-    # stadium 100 x 32 with a 4 mm bit: passes follow the semicircles
-    import math
-    st = cam.Region("h", -50, 50, 8, 40, 12.2, "u", shape="slot")
-    check(st.closed, "slot regions are closed")
-    ps = cam.slot_passes(st, 4.0)
-    check(len(ps) >= 15, "stadium needs many passes ({})".format(len(ps)))
-    for (u0, v), (u1, _v) in ps:
-        reach = math.sqrt(max((16 - 2) ** 2 - (v - 24) ** 2, 0))
-        check(abs(max(u0, u1) - (50 - 16 + reach)) < 1e-9 and abs(min(u0, u1) + (50 - 16 + reach)) < 1e-9,
-              "pass at v={:.2f} ends on the inset arc".format(v))
-    vs = sorted(v for (_u0, v), _ in ps)
-    check(abs(vs[0] - 10) < 1e-9 and abs(vs[-1] - 38) < 1e-9, "outer passes a tool radius inside the slot")
-    check(abs(sorted(abs(u1 - u0) for (u0, _), (u1, _) in ps)[0] - 68) < 1e-9, "outermost pass covers the straight part only")
 
     # nesting: the standard drawer's 12 mm panels on a 630 x 1080 sheet with a 6 mm bit
     items = [nesting.Item(k, l, w, 12) for k, l, w in
@@ -257,6 +244,10 @@ def main():
     bad.sheet_w, bad.sheet_h = 300.0, 300.0
     problems, _ = cam.validate_drawer(part, params, bad)
     check(problems, "small sheet is rejected")
+    bad.sheet_w, bad.sheet_h = 630.0, 1080.0
+    bad.tool_d = 32.0
+    problems, _ = cam.validate_drawer(part, params, bad)
+    check(any("handle slot" in p for p in problems), "bit as wide as the handle slot is rejected")
 
     # --- second drawer, nested together ---------------------------------------------
     part_c = drawers.create_drawer("Captured", DRAWER_C)
@@ -423,8 +414,8 @@ def main():
           "panels flush with the top and left edges")
     ops = job.Proxy.allOperations()
     is_dressup = lambda o: hasattr(o, "Base") and not isinstance(o.Base, list) and o.Base is not None
-    tags = [o for o in ops if is_dressup(o)]
     cuts = [o for o in ops if o.Name.startswith("Cut12mm_1_") and not is_dressup(o)]
+    tags = [o for o in ops if is_dressup(o) and o.Base in cuts]
     check(len(cuts) == len(sheet.lines) == r12.cut_slots, "one Slot per cut line ({})".format(len(cuts)))
     check(len(tags) == len([l for l in sheet.lines if l.tabs]), "one Tags dress-up per cut with tabs")
     check(not r12.disabled_tabs, "no tabs disabled: {}".format(r12.disabled_tabs))
@@ -459,20 +450,35 @@ def main():
         lo, hi = (sbb.YMin, sbb.YMax) if placed_side.rotated else (sbb.XMin, sbb.XMax)
         check(abs(ends[0] - lo - (6 + d / 2)) < 1e-6 and abs(hi - ends[1] - (6 + d / 2)) < 1e-6,
               "SideL groove pass stops {:.1f} inside each end".format(6 + d / 2))
-    handles = [o for o in ops if o.Label.startswith("Drawer_SideL_Handle")]
-    check(len(handles) >= 15 and all(abs(o.FinalDepth.Value + 12.2) < 1e-6 for o in handles), "SideL handle slot: through passes ({})".format(len(handles)))
-    hx = [c for o in handles for c in (o.CustomPoint1, o.CustomPoint2)]
-    if placed_side.rotated:
-        span = max(c.y for c in hx) - min(c.y for c in hx)
-        across = max(c.x for c in hx) - min(c.x for c in hx)
-    else:
-        span = max(c.x for c in hx) - min(c.x for c in hx)
-        across = max(c.y for c in hx) - min(c.y for c in hx)
-    hreg = [r for r in cam.pocket_regions("SideL", params, cam.panel_frame("SideL", params)) if r.name == "Handle"][0]
-    hus = [c[0] for pp in cam.slot_passes(hreg, d) for c in pp]
-    check(abs(span - (max(hus) - min(hus))) < 1e-6 and abs(across - (32 - d)) < 1e-6 and span <= 100 - d + 1e-9,
-          "handle passes on the sheet match the frame passes ({:.2f} x {:.2f}, tool {:g})".format(span, across, d))
-    check(not [o for o in ops if o.Label.startswith("Captured_SideL_Handle")], "drawer without handle slots has no handle passes")
+    handle = [o for o in ops if o.Label == "Drawer_SideL_HandleSlot"]
+    check(len(handle) == 1, "one handle profile op for SideL")
+    hop = handle[0]
+    check(hop.Side == "Inside" and hop.UseComp and len(hop.Base) == 1 and len(hop.Base[0][1]) == 4,
+          "handle profile: inside, tool-compensated, on the slot's four top edges")
+    check(all(sub.startswith("Edge") for sub in hop.Base[0][1]) and hop.Base[0][0] == side_clone, "handle profile references the SideL clone's edges")
+    check(abs(hop.FinalDepth.Value + 12.2) < 1e-6, "handle profile cuts through (-12.2)")
+    moves = [c for c in hop.Path.Commands if c.Name in ("G1", "G2", "G3", "G01", "G02", "G03")]
+    check([c for c in moves if c.Name in ("G2", "G3", "G02", "G03")], "handle profile follows the semicircles (arc moves)")
+    # Every cutting endpoint lies on the tool-compensated stadium: in the panel frame its
+    # distance to the segment between the two semicircle centres is 16 - tool radius.
+    frame_a = cam.panel_frame("SideL", params)
+    inv = side_clone.Placement.inverse()
+    n_pts = 0
+    for c in moves:
+        if "X" not in c.Parameters or "Y" not in c.Parameters:
+            continue
+        local = inv.multVec(FreeCAD.Vector(c.Parameters["X"], c.Parameters["Y"], sbb.ZMax))
+        u, v = local.dot(frame_a.U), local.dot(frame_a.V) - 24.0  # slot centre at v = 60 - 20 - 16
+        dist = abs(v) if abs(u) <= 34.0 else math.hypot(abs(u) - 34.0, v)
+        check(abs(dist - (16.0 - d / 2.0)) < 1e-3, "handle path point ({:.2f}, {:.2f}) on the compensated outline (dist {:.3f})".format(u, v, dist))
+        n_pts += 1
+    check(n_pts >= 8, "handle path has endpoints on lines and arcs ({})".format(n_pts))
+    htags = [o for o in ops if o.Label == "Drawer_SideL_HandleSlot_Tags"]
+    check(len(htags) == 1 and len(htags[0].Positions) == 2 and not htags[0].Disabled, "handle profile has two tabs, none disabled")
+    check(htags[0].Base == hop and hop not in job.Operations.Group and htags[0] in job.Operations.Group,
+          "handle profile is replaced by its tags dress-up in the operations")
+    check([o for o in ops if o.Label == "Drawer_SideR_HandleSlot"], "SideR has its handle profile too")
+    check(not [o for o in ops if o.Label.startswith("Captured_SideL_HandleSlot")], "drawer without handle slots has no handle op")
     check([o for o in ops if o.Label.startswith("Captured_Bottom_Rabbet")], "captured bottom has rabbet passes")
     check(not [o for o in ops if o.Label.startswith("Drawer_Bottom_Rabbet")], "inserted bottom has none")
     for prefix in ("Captured_", "Drawer_"):

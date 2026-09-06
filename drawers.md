@@ -57,7 +57,7 @@ all pockets run the full height of the panel. the sides' end grain shows at the 
 
 ## handle slots
 
-optionally (`handle_slot`, live-editable) each **side** gets a through slot for carrying the box: a stadium `handle_width` wide (default 100 mm) and `handle_diameter` high (default 32 mm, the diameter of its semicircular ends), centred in the depth, with its top edge `handle_v_offset` (default 20 mm) below the top edge of the side. no roundovers or other dress-ups are modelled — those are applied off the CNC (no automatic tool changer for now). CAM mills the slot through with parallel passes whose ends follow the semicircles; the slot must stay above the bottom groove and narrower than the depth.
+optionally (`handle_slot`, live-editable) each **side** gets a through slot for carrying the box: a stadium `handle_width` wide (default 100 mm) and `handle_diameter` high (default 32 mm, the diameter of its semicircular ends), centred in the depth, with its top edge `handle_v_offset` (default 20 mm) below the top edge of the side. no roundovers or other dress-ups are modelled — those are applied off the CNC (no automatic tool changer for now). CAM cuts the slot as a through profile along its outline (inside, tool-compensated) with one tab in the middle of each straight segment holding the waste piece; the slot must stay above the bottom groove and narrower than the depth, and the bit narrower than the slot diameter.
 
 ## datamodel
 

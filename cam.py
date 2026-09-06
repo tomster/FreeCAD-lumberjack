@@ -39,8 +39,9 @@ a corner pocket on their inner face at each end; the front and back tuck into th
       and validate_drawer reports it as a manual cut
   half-lap: pocket t_side wide out to the end edge; front/back t_side shorter, no cut
   overlap: no pockets, all four walls fully overlap
-Optional handle slots (handle_slot) are through stadiums in the sides, milled with parallel
-passes whose ends follow the semicircles (Region shape "slot").
+Optional handle slots (handle_slot) are through stadiums in the sides, cut as a Profile op
+on the slot's top edges of the model clone (inside, tool-compensated) with a Tags dress-up
+holding the waste piece by one tab on each straight segment.
 
 Verified against the FreeCAD 1.1.3 CAM API.
 """
@@ -272,19 +273,16 @@ class Region:
 
     Open-ended regions (the default) reach a panel edge along the pass direction and the
     passes overshoot them; a closed region is a stopped pocket whose passes end with the
-    tool's round end tangent to the region boundary. shape "slot" is a stadium (closed):
-    the bounding rectangle's short sides are replaced by semicircles and every pass ends
-    with the tool tangent to them.
+    tool's round end tangent to the region boundary.
     """
 
-    def __init__(self, name, u0, u1, v0, v1, depth, along, closed=False, shape="rect"):
+    def __init__(self, name, u0, u1, v0, v1, depth, along, closed=False):
         self.name = name
         self.u0, self.u1 = min(u0, u1), max(u0, u1)
         self.v0, self.v1 = min(v0, v1), max(v0, v1)
         self.depth = depth
         self.along = along  # "u" or "v": direction of the passes
-        self.shape = shape
-        self.closed = closed or shape == "slot"
+        self.closed = closed
 
     @property
     def width_across(self):
@@ -309,14 +307,6 @@ def pocket_regions(role, p, frame):
         regions.append(Region("Groove", -gu, gu,
                               -W / 2.0 if role == "Back" else g0, g1, ts / 2.0, "u",
                               closed=stopped))
-        if role in ("SideL", "SideR") and p.handle_slot:
-            # Through handle slot, centred in the depth, top edge handle_v_offset below
-            # the top edge of the side.
-            top = W / 2.0 - p.handle_v_offset
-            regions.append(Region(
-                "Handle", -p.handle_width / 2.0, p.handle_width / 2.0,
-                top - p.handle_diameter, top, ts + THROUGH_OVERCUT, "u", shape="slot",
-            ))
         if not p.overlap_box:
             # SideR's and Back's panel-frame U points against the drawer axis, so the
             # names follow the flipped end (they match the pocket names in drawers.py).
@@ -348,15 +338,26 @@ def pocket_regions(role, p, frame):
     return regions
 
 
+def handle_outline(role, p, frame):
+    """
+    Bounding rectangle (u0, u1, v0, v1) of the handle slot in the panel frame, or None.
+
+    The slot itself is a stadium inside that rectangle: semicircles of diameter v1 - v0 at
+    both ends. It is cut as a profile of the model's edges, not as slot passes.
+    """
+    if role not in ("SideL", "SideR") or not p.handle_slot:
+        return None
+    top = frame.W / 2.0 - p.handle_v_offset
+    return (-p.handle_width / 2.0, p.handle_width / 2.0, top - p.handle_diameter, top)
+
+
 def slot_passes(region, tool_d):
     """
     Parallel center-line passes covering a region.
 
     Returns a list of ((u, v), (u, v)) start/end pairs in the panel frame. Passes overshoot
     both ends of an open-ended region; for a closed (stopped) region they stop with the
-    tool's round end tangent to the boundary, and for a "slot" each pass is shortened so
-    the tool stays tangent to the end semicircles (the tool centre runs on the arc offset
-    inwards by the tool radius). Raises ToolTooWide if the tool does not fit.
+    tool's round end tangent to the boundary. Raises ToolTooWide if the tool does not fit.
     """
     if region.along == "u":
         a0, a1, b0, b1 = region.u0, region.u1, region.v0, region.v1
@@ -383,12 +384,7 @@ def slot_passes(region, tool_d):
     ext = -tool_d / 2.0 if region.closed else tool_d / 2.0 + PASS_EXTENSION_EXTRA
     passes = []
     for i, c in enumerate(centers):
-        if region.shape == "slot":
-            R = w / 2.0
-            reach = math.sqrt(max((R - tool_d / 2.0) ** 2 - (c - (b0 + b1) / 2.0) ** 2, 0.0))
-            start, end = a0 + R - reach, a1 - R + reach
-        else:
-            start, end = a0 - ext, a1 + ext
+        start, end = a0 - ext, a1 + ext
         if i % 2:
             start, end = end, start  # alternate direction between neighbouring passes
         if region.along == "u":
@@ -458,6 +454,12 @@ def validate_drawer(part, params, settings):
                 slot_passes(region, d)
             except ToolTooWide as e:
                 problems.append("{} {}: {}".format(label, role, e))
+        if handle_outline(role, params, frame) is not None and d >= params.handle_diameter - 1e-6:
+            problems.append(
+                "{} {}: handle slot is {:.2f} mm high, tool is {:.2f} mm".format(
+                    label, role, params.handle_diameter, d
+                )
+            )
         item = nesting.Item((label, role), frame.L, frame.W, frame.t)
         if not nesting.orientations(item, max_u, max_v):
             problems.append(
@@ -930,8 +932,53 @@ def _make_slot(job, name, tc, p1, p2, z_top, depth, step_down):
     return op
 
 
+def _slot_top_edges(clone, frame, pl, outline, z_top):
+    """
+    Sub-element names of the clone's edges that form the handle slot's outline on the
+    top (featured) face: two lines and two semicircles.
+
+    Found by geometry, so the names are valid for the clone as it stands; a re-run
+    regenerates them together with everything else.
+    """
+    u0, u1, v0, v1 = outline
+    pts = [pl.multVec(frame.to_local(u, v)) for u in (u0, u1) for v in (v0, v1)]
+    xs, ys = [q.x for q in pts], [q.y for q in pts]
+    eps = 1e-6
+    names = []
+    for i, edge in enumerate(clone.Shape.Edges):
+        bb = edge.BoundBox
+        if abs(bb.ZMin - z_top) > eps or abs(bb.ZMax - z_top) > eps:
+            continue
+        if (bb.XMin < min(xs) - eps or bb.XMax > max(xs) + eps
+                or bb.YMin < min(ys) - eps or bb.YMax > max(ys) + eps):
+            continue
+        names.append("Edge{}".format(i + 1))
+    if len(names) != 4:
+        raise RuntimeError(
+            "{}: expected the 4 edges of the handle slot on the top face, found {}".format(
+                clone.Label, len(names)
+            )
+        )
+    return names
+
+
+def _make_handle_profile(job, name, tc, clone, subnames, z_top, depth, step_down):
+    """Inside, tool-compensated profile of the handle slot's outline edges, through."""
+    import Path.Op.Profile as PathProfile
+
+    op = PathProfile.Create(name, parentJob=job)
+    _attach_op_viewprovider(op, "Profile")
+    op.ToolController = tc
+    op.Base = [(clone, tuple(subnames))]
+    op.Side = "Inside"
+    op.UseComp = True
+    op.Direction = "CW"
+    _set_depths(op, z_top, z_top - depth, step_down)
+    return op
+
+
 def _make_tags(job, doc, base_op, positions, thickness, name):
-    """Tags dress-up on a Slot cut; replaces the base op in the operation list."""
+    """Tags dress-up on a cut (Slot or Profile); replaces the base op in the operation list."""
     import Path.Dressup.Tags as PathDressupTag
 
     tags = PathDressupTag.Create(base_op, name)
@@ -1226,7 +1273,8 @@ def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir, containe
     _setup_stock(job, doc, settings, thickness)
     tool_d = settings.tool_d
 
-    # Pockets first (grooves, rabbets) so panels stay attached while pocketing.
+    # Pockets first (grooves, rabbets, handle slots) so panels stay attached while pocketing.
+    handle_ops = []
     for placed in sheet.items:
         ref = placed.item.data
         clone = clones[placed.item.key]
@@ -1243,6 +1291,24 @@ def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir, containe
                     tc, p1, p2, z_top, region.depth, settings.step_down,
                 )
                 result.pocket_slots += 1
+        outline = handle_outline(ref.role, ref.params, frame)
+        if outline is not None:
+            subs = _slot_top_edges(clone, frame, pl, outline, z_top)
+            # "HandleSlot", not "Handle": the drawer body's pocket feature already carries
+            # the label <Part>_<Role>_Handle and FreeCAD would suffix a duplicate label.
+            name = "{}_{}_HandleSlot".format(_sanitize(ref.part.Label), ref.role)
+            op = _make_handle_profile(
+                job, name, tc, clone, subs, z_top, thickness + THROUGH_OVERCUT, settings.step_down
+            )
+            handle_ops.append((op, outline, frame, pl, name))
+            result.pocket_slots += 1
+    doc.recompute()
+    # The waste piece of a handle slot stays attached by one tab in the middle of each
+    # straight segment, placed on the tool-compensated path.
+    for op, (u0, u1, v0, v1), frame, pl, name in handle_ops:
+        r = tool_d / 2.0
+        tabs = [pl.multVec(frame.to_local(0.0, v1 - r)), pl.multVec(frame.to_local(0.0, v0 + r))]
+        _make_tags(job, doc, op, [(t.x, t.y) for t in tabs], thickness, name + "_Tags")
     doc.recompute()
 
     # Outline cuts: one Slot per merged cut line, tabs from the nest.
