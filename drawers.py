@@ -42,19 +42,24 @@ Bottom joint (decided live by the expression t_bottom < t_side):
 Corner joinery (corner_joint enumeration, decided live by expressions on its index). The
 orientation is the same for all variants: the sides run the full depth, the front and back
 tuck into them.
-  - "Tongue and dado" (0): the sides carry a dado at each end, t_side / 2 wide and
-    t_side / 2 deep on their inner face, offset t_side / 2 from the end edge; the front and
-    back are t_side shorter than the width and get a matching half-lap (t_side / 2 x
-    t_side / 2) at each end, again on the inner face, so their outer half forms the tongue
-    that slides into the side dados. Keeping every cut on the inner face lets CAM machine
-    each panel in a single setup; the price is that the front and back sit t_side / 2
-    behind the ends of the sides.
+  - "Tongue and dado (recessed)" (0): the sides carry a dado at each end, t_side / 2 wide
+    and t_side / 2 deep on their inner face, offset t_side / 2 from the end edge; the front
+    and back are t_side shorter than the width and get a matching half-lap (t_side / 2 x
+    t_side / 2) at each end on the *inner* face, so their outer half forms the tongue that
+    slides into the side dados. Keeping every cut on the inner face lets CAM machine each
+    panel in a single setup; the price is that the front and back sit t_side / 2 behind
+    the ends of the sides.
   - "Half-lap" (1): the side pocket widens to t_side and runs out to the end edge (a
     rabbet); the front and back (still t_side shorter) sit in it flush with the side ends,
     without any cut of their own.
   - "Overlap" (2): all four walls are dimensioned to fully overlap (box-joint stock), no
     joint is cut.
-  Legacy drawers carry an overlap_box boolean instead; corner_joint_of() maps it.
+  - "Tongue and dado (flush)" (3): same side dado as (0), but the front and back sit flush
+    with the side ends and their lap is on the *outer* face (the inner half is the tongue).
+    That lap faces down when the panel lies inner-face-up on the CNC, so CAM does not
+    machine it and reports it as a manual cut instead.
+  Legacy drawers carry an overlap_box boolean instead; corner_joint_of() maps it. The
+  index order is append-only: saved drawers bake the indices into their expressions.
 
 The whole drawer Part is rotated 180 deg about Z so its front (the optional drawer front
 and the front wall) faces the FreeCAD "front" (-Y) view direction.
@@ -130,8 +135,14 @@ _KEY_TO_PROP = {
 }
 
 # Corner joinery variants; the holder's corner_joint enumeration uses these indices.
-CORNER_JOINTS = ("Tongue and dado", "Half-lap", "Overlap")
-JOINT_TONGUE_DADO, JOINT_HALF_LAP, JOINT_OVERLAP = 0, 1, 2
+# Append-only: the indices are baked into the expressions of saved drawers.
+CORNER_JOINTS = (
+    "Tongue and dado (recessed)",
+    "Half-lap",
+    "Overlap",
+    "Tongue and dado (flush)",
+)
+JOINT_TONGUE_DADO, JOINT_HALF_LAP, JOINT_OVERLAP, JOINT_TONGUE_DADO_FLUSH = 0, 1, 2, 3
 
 
 def joint_index(value):
@@ -146,7 +157,10 @@ def joint_index(value):
 def corner_joint_of(holder):
     """The holder's corner joint index; legacy holders only have the overlap_box bool."""
     if "corner_joint" in holder.PropertiesList:
-        return joint_index(str(holder.corner_joint))
+        # By position in the holder's own list: a saved drawer keeps the list it was
+        # created with, so only the index is stable across renamed entries.
+        names = holder.getEnumerationsOfProperty("corner_joint")
+        return names.index(str(holder.corner_joint))
     return joint_index(bool(holder.overlap_box))
 
 
@@ -343,9 +357,10 @@ def create_parameter_holder(doc, part, name, label, values):
         "App::PropertyEnumeration",
         "corner_joint",
         "Drawer",
-        "Corner joinery: tongue and dado (sides dadoed, front/back lapped, recessed by "
-        "t_side/2), half-lap (sides rabbeted, front/back flush) or overlap (box-joint "
-        "stock, no joint cut). The sides always run the full depth.",
+        "Corner joinery: tongue and dado with the front/back recessed by t_side/2 (all "
+        "cuts on the inner faces, fully CNC) or flush (their lap is on the outer face, a "
+        "manual cut), half-lap (sides rabbeted, front/back flush, glue only) or overlap "
+        "(box-joint stock, no joint cut). The sides always run the full depth.",
     )
     holder.corner_joint = list(CORNER_JOINTS)
     holder.addProperty(
@@ -600,29 +615,34 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     # Box corner joinery, live-editable through the corner_joint enumeration (its index
     # is what the expressions see). The sides always run the full depth and carry the
     # corner pocket on their inner face at each end; the front and back tuck into them:
-    #   tongue and dado (0): pocket t_side/2 wide, offset t_side/2 from the end; front/back
-    #       shortened by t_side, lapped at the ends, recessed t_side/2 behind the side ends
+    #   tongue and dado, recessed (0): pocket t_side/2 wide, offset t_side/2 from the end;
+    #       front/back shortened by t_side, lapped on the inner face at the ends, recessed
+    #       t_side/2 behind the side ends -- every cut on an inner face, fully CNC
     #   half-lap (1): pocket t_side wide, out to the end edge; front/back shortened by
     #       t_side, no cut, flush with the side ends
     #   overlap (2): no pockets, all four walls dimensioned to fully overlap
-    # Every cut stays on the inner face, so CAM machines each panel in one setup.
+    #   tongue and dado, flush (3): side pocket as (0); front/back flush with the side ends,
+    #       lapped on the *outer* face (manual cut, see cam.py)
+    # (The expression language has no logical operators, hence the nested ternaries.)
     cj = H("corner_joint")
-    tongue_dado = "{cj} == {i}".format(cj=cj, i=JOINT_TONGUE_DADO)
+    recessed = "{cj} == {i}".format(cj=cj, i=JOINT_TONGUE_DADO)
+    flush_td = "{cj} == {i}".format(cj=cj, i=JOINT_TONGUE_DADO_FLUSH)
     overlapping = "{cj} == {i}".format(cj=cj, i=JOINT_OVERLAP)
     corner_suppress = "{o} ? 1 : 0".format(o=overlapping)
-    lap_suppress = "{td} ? 0 : 1".format(td=tongue_dado)
+    # Laps exist for both tongue-and-dado variants only.
+    lap_suppress = "{r} ? 0 : ({f} ? 0 : 1)".format(r=recessed, f=flush_td)
     side_len = H("depth")
     fb_len = "{o} ? {w} : {w} - {ts}".format(o=overlapping, w=H("width"), ts=H("t_side"))
     height = H("height")
     t_side = H("t_side")
     t_bottom = H("t_bottom")
     bottom_x = "{w} - {ts}".format(w=H("width"), ts=H("t_side"))
-    bottom_y = "{d} - ({td} ? 2 * {ts} : {ts})".format(
-        td=tongue_dado, d=H("depth"), ts=H("t_side")
+    bottom_y = "{d} - ({r} ? 2 * {ts} : {ts})".format(
+        r=recessed, d=H("depth"), ts=H("t_side")
     )
     cavity_x = "{w} - 2 * {ts}".format(w=H("width"), ts=H("t_side"))
-    cavity_y = "{d} - ({td} ? 3 * {ts} : 2 * {ts})".format(
-        td=tongue_dado, d=H("depth"), ts=H("t_side")
+    cavity_y = "{d} - ({r} ? 3 * {ts} : 2 * {ts})".format(
+        r=recessed, d=H("depth"), ts=H("t_side")
     )
     groove_depth = "{ts} / 2".format(ts=H("t_side"))
     half_ts = "{ts} / 2".format(ts=H("t_side"))
@@ -647,17 +667,22 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     open_groove_dv = "2 * ({gd}) + {off}".format(gd=groove_dv, off=H("bottom_v_offset"))
 
     half_w = "{w} / 2 - {ts} / 2".format(w=H("width"), ts=H("t_side"))
-    half_d = "{d} / 2 - ({td} ? {ts} : {ts} / 2)".format(
-        td=tongue_dado, d=H("depth"), ts=H("t_side")
+    half_d = "{d} / 2 - ({r} ? {ts} : {ts} / 2)".format(
+        r=recessed, d=H("depth"), ts=H("t_side")
     )
     # Corner pockets in the sides (v = depth): start t_side from the end and run t_side/2
-    # (dado) or all the way to the end edge (half-lap rabbet).
-    corner_dv = "{td} ? {ts} / 2 : {ts}".format(td=tongue_dado, ts=H("t_side"))
+    # (dado, both tongue-and-dado variants) or all the way to the end edge (half-lap rabbet).
+    corner_dv = "{r} ? {ts} / 2 : ({f} ? {ts} / 2 : {ts})".format(
+        r=recessed, f=flush_td, ts=H("t_side")
+    )
     corner_front_v0 = "{d} / 2 - {ts}".format(d=H("depth"), ts=H("t_side"))
     corner_back_v0 = "-{d} / 2 + {ts} - ({dv})".format(d=H("depth"), ts=H("t_side"), dv=corner_dv)
-    # Matching laps at the ends of the front/back (u = length): t_side/2 long.
+    # Matching laps at the ends of the front/back (u = length): t_side/2 long. In v
+    # (thickness) they take the inner half when recessed and the outer half when flush.
     lap_left_u0 = "-({fb}) / 2".format(fb=fb_len)
     lap_right_u0 = "({fb}) / 2 - {ts} / 2".format(fb=fb_len, ts=H("t_side"))
+    back_lap_v0 = "{f} ? -{ts} / 2 : 0 mm".format(f=flush_td, ts=H("t_side"))
+    front_lap_v0 = "{f} ? 0 mm : -{ts} / 2".format(f=flush_td, ts=H("t_side"))
 
     # --- Left side wall (inner face +X) --------------------------------------
     side_l = _create_body(doc, part, "{}_SideL".format(base), "{}_SideL".format(lbl))
@@ -702,7 +727,7 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     for pocket_name, u0 in (("LapLeft", lap_left_u0), ("LapRight", lap_right_u0)):
         _cut_pocket(
             doc, back, "XY_Plane",
-            u0_expr=u0, du_expr=half_ts, v0_expr="0", dv_expr=half_ts,
+            u0_expr=u0, du_expr=half_ts, v0_expr=back_lap_v0, dv_expr=half_ts,
             name=pocket_name, suppress_expr=lap_suppress,
         )
     _set_placement(back, y_expr="-({})".format(half_d), z_expr="{} / 2".format(height))
@@ -719,7 +744,7 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
         _cut_pocket(
             doc, front, "XY_Plane",
             u0_expr=u0, du_expr=half_ts,
-            v0_expr="-({})".format(half_ts), dv_expr=half_ts,
+            v0_expr=front_lap_v0, dv_expr=half_ts,
             name=pocket_name, suppress_expr=lap_suppress,
         )
     _set_placement(front, y_expr=half_d, z_expr="{} / 2".format(height))
@@ -1232,14 +1257,14 @@ def _validate_values(values):
         off = probe.bottom_v_offset.Value
         # Inserted bottom (tb < ts): groove top is at offset + 2 * tb; captured: offset + tb.
         groove_top = off + (2 * tb if tb < ts else tb)
-        tongue_dado = joint_index(values.get("corner_joint", JOINT_TONGUE_DADO)) == JOINT_TONGUE_DADO
-        depth_factor = 3 if tongue_dado else 2
+        recessed = joint_index(values.get("corner_joint", JOINT_TONGUE_DADO)) == JOINT_TONGUE_DADO
+        depth_factor = 3 if recessed else 2
         checks = [
             (ts > 0, "side thickness must be > 0"),
             (tb > 0, "bottom thickness must be > 0"),
             (w > 2 * ts, "width must be greater than 2 x side thickness"),
-            # Tongue and dado recesses the front and back by t_side / 2 each, so the
-            # cavity needs a third side thickness of depth.
+            # The recessed tongue and dado sets the front and back back by t_side / 2
+            # each, so the cavity needs a third side thickness of depth.
             (
                 d > depth_factor * ts,
                 "depth must be greater than {} x side thickness".format(depth_factor),

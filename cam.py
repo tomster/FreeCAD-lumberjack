@@ -31,8 +31,12 @@ The corner joinery *is* modelled in the drawer bodies, but every dimension is re
 here (DrawerParams, pocket_regions) rather than read back from the solids, so both must be
 kept in lock-step with drawers.create_drawer. The sides always run the full depth and carry
 a corner pocket on their inner face at each end; the front and back tuck into them:
-  tongue and dado: pocket t_side/2 wide, offset t_side/2 from the end; front/back t_side
-      shorter, lapped t_side/2 x t_side/2 at each end, recessed t_side/2
+  tongue and dado, recessed: pocket t_side/2 wide, offset t_side/2 from the end;
+      front/back t_side shorter, lapped t_side/2 x t_side/2 on the inner face, recessed
+      t_side/2 -- fully machinable face-up
+  tongue and dado, flush: same side dado; front/back flush, their lap sits on the OUTER
+      face and cannot be reached with the panel lying inner-face-up, so it is not machined
+      and validate_drawer reports it as a manual cut
   half-lap: pocket t_side wide out to the end edge; front/back t_side shorter, no cut
   overlap: no pockets, all four walls fully overlap
 
@@ -124,13 +128,24 @@ class DrawerParams:
         return self.corner_joint == _drawers.JOINT_OVERLAP
 
     @property
-    def tongue_dado(self):
+    def recessed(self):
+        """Recessed tongue and dado: front/back sit t_side / 2 behind the side ends."""
         return self.corner_joint == _drawers.JOINT_TONGUE_DADO
+
+    @property
+    def dadoed(self):
+        """Either tongue-and-dado variant: the side pocket is a t_side / 2 dado."""
+        return self.corner_joint in (_drawers.JOINT_TONGUE_DADO, _drawers.JOINT_TONGUE_DADO_FLUSH)
+
+    @property
+    def manual_laps(self):
+        """Flush tongue and dado: the front/back laps are on the outer face, cut by hand."""
+        return self.corner_joint == _drawers.JOINT_TONGUE_DADO_FLUSH
 
     # Same derivations as drawers.create_drawer(): the sides always run the full depth
     # and carry the corner pockets, the front and back are shortened by t_side and tuck
     # into them (unless overlap_box dimensions all four walls to fully overlap). Only the
-    # tongue-and-dado variant recesses the front and back by t_side / 2.
+    # recessed tongue-and-dado variant sets the front and back back by t_side / 2.
     @property
     def side_len(self):
         return self.depth
@@ -145,7 +160,7 @@ class DrawerParams:
 
     @property
     def bottom_y(self):
-        return self.depth - (2 * self.t_side if self.tongue_dado else self.t_side)
+        return self.depth - (2 * self.t_side if self.recessed else self.t_side)
 
     def thickness(self, role):
         if role == "Bottom":
@@ -279,9 +294,10 @@ def pocket_regions(role, p, frame):
                 # Corner pockets: a ts/2 dado offset ts/2 from the end (tongue and dado)
                 # or a ts wide rabbet out to the end edge (half-lap).
                 ends = (("CornerFront", f), ("CornerBack", -f))
-                near, far = (ts / 2.0 if p.tongue_dado else 0.0), ts
-            elif p.tongue_dado:
-                # Matching half-laps at the very ends of the front/back.
+                near, far = (ts / 2.0 if p.dadoed else 0.0), ts
+            elif p.recessed:
+                # Matching half-laps at the very ends of the front/back. The flush
+                # variant's laps are on the outer face and are left to the workshop.
                 ends = (("LapRight", f), ("LapLeft", -f))
                 near, far = 0.0, ts / 2.0
             else:
@@ -382,6 +398,12 @@ def validate_drawer(part, params, settings):
         return problems, warnings
     clearance = nesting.edge_clearance(d)
     max_u, max_v = settings.sheet_w - clearance, settings.sheet_h - clearance
+    if params.manual_laps:
+        warnings.append(
+            "{}: flush tongue and dado - the laps of Front and Back are on the OUTER face "
+            "and are not machined; rabbet both ends of both panels by hand, "
+            "{:g} x {:g} mm (full height)".format(label, params.t_side / 2.0, params.t_side / 2.0)
+        )
     for role, _body in panels:
         if role == "DrawerFront" and settings.skip_drawer_front:
             continue

@@ -59,12 +59,16 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   and the corner/lap pockets are switched off via an expression on the pocket's
   `Suppressed` property.
 - Corner joinery is the `corner_joint` enumeration (`drawers.CORNER_JOINTS`: tongue and
-  dado / half-lap / overlap). One orientation for all: sides run the full depth and carry
-  the `Corner*` pocket at each end (`t_side/2` dado or `t_side` rabbet), front/back are
-  `t_side` shorter; only tongue and dado adds `Lap*` pockets and the `t_side/2` recess. It
-  is modelled in the bodies *and* re-derived in `cam.py` (`DrawerParams`,
-  `pocket_regions`); change both in lock-step — `test_cam.check_panels` pins them together
-  (panel bbox vs. `panel_frame`, plus a pairwise no-interpenetration check).
+  dado recessed / half-lap / overlap / tongue and dado flush — **append-only**, saved
+  drawers bake the indices into their expressions; read it via `corner_joint_of`, which
+  indexes the holder's own list). One orientation for all: sides run the full depth and
+  carry the `Corner*` pocket at each end (`t_side/2` dado or `t_side` rabbet), front/back
+  are `t_side` shorter; the tongue-and-dado variants add `Lap*` pockets — inner face +
+  `t_side/2` recess (machined) or outer face + flush (not machinable face-up; CAM emits a
+  manual-cut warning instead). It is modelled in the bodies *and* re-derived in `cam.py`
+  (`DrawerParams`, `pocket_regions`); change both in lock-step — `test_cam.check_panels`
+  pins them together (panel bbox vs. `panel_frame`, plus a pairwise no-interpenetration
+  check). The expression language has no `||`/`&&`; use nested ternaries.
 - Drawer detection is by structure (holder with `width`, `t_side`, `t_bottom` and
   `corner_joint` — or the legacy `overlap_box` bool, mapped by `drawers.corner_joint_of`;
   bodies named `<Part>_<Role>`), see `drawers.drawer_holder` /

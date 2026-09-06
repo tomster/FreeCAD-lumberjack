@@ -223,9 +223,26 @@ def main():
     check_panels(cam, drawers, part_c, holder_c, interference=False)  # overlapping stock by design
     check(abs(bodies_c["Front"].Shape.BoundBox.XLength - 300.0) < 1e-6, "overlap: front runs the full width")
     check(not [f for f in bodies_c["SideL"].Group if f.Name.endswith("_CornerFront") and not f.Suppressed], "overlap: corner pockets suppressed")
-    holder_c.corner_joint = "Tongue and dado"
+    holder_c.corner_joint = "Tongue and dado (flush)"
     doc.recompute()
     check_panels(cam, drawers, part_c, holder_c)
+    fb = bodies_c["Front"].Shape.BoundBox
+    check(abs(fb.YMax - sb.YMax) < 1e-6 and abs(fb.XLength - 288.0) < 1e-6, "flush T&D: front flush with the side ends, t_side shorter")
+    check(abs(bodies_c["Bottom"].Shape.BoundBox.YLength - 388.0) < 1e-6, "flush T&D: bottom is depth - t_side long")
+    # The lap is on the outer face: the outer end corner is void, the inner one (tongue) solid.
+    import Part
+    outer = Part.makeBox(6, 6, 100, FreeCAD.Vector(fb.XMax - 6, fb.YMax - 6, 0))
+    inner = Part.makeBox(6, 6, 100, FreeCAD.Vector(fb.XMax - 6, fb.YMin, 0))
+    front_shape = bodies_c["Front"].Shape
+    check(front_shape.common(outer).Volume < 1e-6 and front_shape.common(inner).Volume > 100.0, "flush T&D: lap on the outer face, tongue on the inner half")
+    holder_c.corner_joint = "Tongue and dado (recessed)"
+    doc.recompute()
+    check_panels(cam, drawers, part_c, holder_c)
+    front_shape = bodies_c["Front"].Shape
+    fb = front_shape.BoundBox
+    outer = Part.makeBox(6, 6, 100, FreeCAD.Vector(fb.XMax - 6, fb.YMax - 6, 0))
+    inner = Part.makeBox(6, 6, 100, FreeCAD.Vector(fb.XMax - 6, fb.YMin, 0))
+    check(front_shape.common(inner).Volume < 1e-6 and front_shape.common(outer).Volume > 100.0, "recessed T&D: lap on the inner face, tongue on the outer half")
 
     # Legacy holders (pre corner_joint) only carry the overlap_box boolean.
     legacy = doc.addObject("App::Part", "Legacy")
@@ -240,7 +257,7 @@ def main():
     doc.recompute()
     check(drawers.drawer_holder(legacy) == lh, "legacy holder detected")
     check(drawers.read_drawer_values(lh)["corner_joint"] == drawers.JOINT_OVERLAP, "legacy overlap_box=True reads as Overlap")
-    check(cam.DrawerParams(lh).overlap_box and not cam.DrawerParams(lh).tongue_dado, "DrawerParams reads the legacy holder")
+    check(cam.DrawerParams(lh).overlap_box and not cam.DrawerParams(lh).recessed, "DrawerParams reads the legacy holder")
     lh.overlap_box = False
     check(drawers.read_drawer_values(lh)["corner_joint"] == drawers.JOINT_TONGUE_DADO, "legacy overlap_box=False reads as tongue and dado")
     drawers.delete_drawer(legacy)
@@ -389,11 +406,19 @@ def main():
     problems_h, _ = cam.validate_drawer(part_c, params_h, wide)
     check(problems_h and not any("Corner" in p or "Lap" in p for p in problems_h),
           "8 mm bit fits the half-lap rabbets; only the 6 mm groove/bottom rabbet reject it: {}".format(problems_h))
-    holder_c.corner_joint = "Tongue and dado"
+    holder_c.corner_joint = "Tongue and dado (flush)"
     doc.recompute()
-    problems_t, _ = cam.validate_drawer(part_c, cam.DrawerParams(holder_c), wide)
+    params_f = cam.DrawerParams(holder_c)
+    check(not [r for r in cam.pocket_regions("Front", params_f, cam.panel_frame("Front", params_f)) if r.name.startswith("Lap")], "flush T&D: outer-face laps are not machined")
+    check([r for r in cam.pocket_regions("SideL", params_f, cam.panel_frame("SideL", params_f)) if r.name.startswith("Corner") and abs(r.u1 - r.u0 - 6.0) < 1e-9], "flush T&D: sides keep the 6 mm dado")
+    problems_f, warn_f = cam.validate_drawer(part_c, params_f, s)
+    check(not problems_f and any("OUTER face" in w and "by hand" in w for w in warn_f), "flush T&D: manual lap reported as a warning: {}".format(warn_f))
+    holder_c.corner_joint = "Tongue and dado (recessed)"
+    doc.recompute()
+    problems_t, warn_t = cam.validate_drawer(part_c, cam.DrawerParams(holder_c), wide)
     check(any("Corner" in p for p in problems_t) and any("Lap" in p for p in problems_t),
           "8 mm bit is rejected for the tongue-and-dado corners")
+    check(not [w for w in warn_t if "by hand" in w], "recessed T&D: no manual-cut warning")
     check(abs(job.SetupSheet.ClearanceHeightOffset.Value - 22) < 1e-6, "clearance offset = clamp height + 2")
 
     # --- G-code ---------------------------------------------------------------------
