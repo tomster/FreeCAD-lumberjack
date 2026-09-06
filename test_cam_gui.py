@@ -127,6 +127,38 @@ def main():
     d3, rej3 = cam.selected_drawers()
     check(len(d3) == 1 and d3[0][0] == part and not rej3, "container selection resolves to the drawer")
 
+    # Finger-jointed drawer: the dialog's tolerance group follows the joinery combo, the
+    # finger Jobs get view providers like the sheet Jobs.
+    kiste = drawers.create_drawer(
+        "Kiste",
+        {
+            "width": "300 mm", "height": "96 mm", "depth": "400 mm",
+            "t_side": "12 mm", "t_bottom": "6 mm", "bottom_v_offset": "0 mm",
+            "corner_joint": 4, "has_front": False, "finger_tolerance": "0.05 mm",
+        },
+    )
+    kiste_holder = cam.drawer_holder(kiste)
+    dlg2 = drawers.CreateDrawerDialog(FreeCADGui.getMainWindow(), existing=(kiste, kiste_holder))
+    check(dlg2.joint_combo.count() == 5 and dlg2.joint_combo.currentIndex() == 4 and dlg2.finger_group.isEnabled(),
+          "recreate dialog seeded with the finger joint, tolerance group enabled")
+    dlg2.joint_combo.setCurrentIndex(0)
+    check(not dlg2.finger_group.isEnabled(), "tolerance group disabled for the other joints")
+    dlg2.joint_combo.setCurrentIndex(4)
+    values2 = dlg2.get_values()
+    check(values2["corner_joint"] == 4 and values2["finger_tolerance"].startswith("0.05"), "dialog values carry joint and tolerance: {}".format(values2["finger_tolerance"]))
+    dlg2.reject()
+    dlg2.deleteLater()
+    FreeCADGui.Selection.clearSelection()
+    res_k, problems, _ = cam.run([(kiste, kiste_holder)], s)
+    check(not problems, "finger drawer run ok: {}".format(problems))
+    fj = [r for r in res_k if r.sheet is None]
+    check(len(fj) == 2 and sorted(r.kind for r in fj) == ["fronts", "sides"], "two finger jobs")
+    for r in fj:
+        check(r.job.ViewObject is not None and r.job.ViewObject.Proxy is not None, "{} has a view provider".format(r.job.Label))
+        check(r.job.Operations.Group and all(op.ViewObject.Proxy is not None for op in r.job.Operations.Group), "{} ops have view providers".format(r.job.Label))
+        check(not any("Invalid" in o.State for o in r.frame.Group), "{} frame valid".format(r.job.Label))
+        check(len(r.job.Model.Group) == 2 and all(abs(c.Shape.BoundBox.ZMax) < 1e-6 for c in r.job.Model.Group), "{}: two walls on end".format(r.job.Label))
+
     doc.save()
 
 

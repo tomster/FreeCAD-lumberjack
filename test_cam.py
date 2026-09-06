@@ -271,11 +271,12 @@ def main():
     sb = bodies_c["SideL"].Shape.BoundBox
     check(abs(fb.YMax - sb.YMax) < 1e-6 and abs(fb.XLength - 288.0) < 1e-6, "half-lap: front flush with the side ends, t_side shorter")
     check(abs(bodies_c["Bottom"].Shape.BoundBox.YLength - 388.0) < 1e-6, "half-lap: bottom is depth - t_side long")
-    holder_c.corner_joint = "Overlap"
+    holder_c.corner_joint = "Mitered"
     doc.recompute()
     check_panels(cam, drawers, part_c, holder_c, interference=False)  # overlapping stock by design
-    check(abs(bodies_c["Front"].Shape.BoundBox.XLength - 300.0) < 1e-6, "overlap: front runs the full width")
-    check(not [f for f in bodies_c["SideL"].Group if f.Name.endswith("_CornerFront") and not f.Suppressed], "overlap: corner pockets suppressed")
+    check(abs(bodies_c["Front"].Shape.BoundBox.XLength - 300.0) < 1e-6, "mitered: front runs the full width")
+    check(not [f for f in bodies_c["SideL"].Group if f.Name.endswith("_CornerFront") and not f.Suppressed], "mitered: corner pockets suppressed")
+    check(cam.DrawerParams(holder_c).mitered and cam.DrawerParams(holder_c).full_walls, "mitered read back")
     holder_c.corner_joint = "Tongue and dado (flush)"
     doc.recompute()
     check_panels(cam, drawers, part_c, holder_c)
@@ -316,8 +317,9 @@ def main():
     lh.overlap_box = True
     doc.recompute()
     check(drawers.drawer_holder(legacy) == lh, "legacy holder detected")
-    check(drawers.read_drawer_values(lh)["corner_joint"] == drawers.JOINT_OVERLAP, "legacy overlap_box=True reads as Overlap")
-    check(cam.DrawerParams(lh).overlap_box and not cam.DrawerParams(lh).recessed, "DrawerParams reads the legacy holder")
+    check(drawers.read_drawer_values(lh)["corner_joint"] == drawers.JOINT_MITERED, "legacy overlap_box=True reads as Mitered")
+    check(cam.DrawerParams(lh).mitered and cam.DrawerParams(lh).full_walls and not cam.DrawerParams(lh).recessed, "DrawerParams reads the legacy holder")
+    check(cam.DrawerParams(lh).finger_tolerance == 0.05 and drawers.read_drawer_values(lh)["finger_tolerance"] == "0.05 mm", "legacy holder: default finger tolerance")
     lv = drawers.read_drawer_values(lh)
     check(lv["handle_slot"] is False and lv["handle_diameter"] == "32 mm", "legacy holder: handle slot off, defaults for the missing lengths")
     check(not cam.DrawerParams(lh).handle_slot, "DrawerParams: legacy holder has no handle slot")
@@ -623,10 +625,147 @@ def main():
     check("bottom edge" in summary, "summary names the bottom edge")
     check(len(doc.Objects) == n_after, "no leak after origin switch")
 
+
+    # --- finger joints ------------------------------------------------------------------
+    n_f, p_f, ss_f, fs_f = drawers.finger_layout(120, 12, 0.05)
+    check(n_f == 10 and abs(p_f - 12) < 1e-9, "120/12: ten fingers of 12 mm")
+    check(len(ss_f) == 5 and abs(ss_f[0][0] - 11.95) < 1e-9 and abs(ss_f[0][1] - 24.05) < 1e-9 and abs(ss_f[-1][1] - 120) < 1e-9,
+          "sides: five slots at the odd positions, widened by the tolerance, clipped to the panel: {}".format(ss_f))
+    check(len(fs_f) == 5 and fs_f[0] == (0.0, 12.05) and abs(fs_f[-1][0] - 95.95) < 1e-9,
+          "fronts: five slots at the even positions starting at the bottom edge: {}".format(fs_f))
+    n_g, p_g, ss_g, fs_g = drawers.finger_layout(100, 12, 0.05)
+    check(n_g == 8 and abs(p_g - 12.5) < 1e-9 and len(ss_g) == 4 and len(fs_g) == 4, "100/12: eight fingers of 12.5 mm")
+    check(drawers.joint_index("Overlap") == drawers.JOINT_MITERED == 2 and drawers.CORNER_JOINTS[2] == "Mitered", "Overlap relabelled Mitered, legacy name still resolves")
+    check(drawers.CORNER_JOINTS[4] == "Finger joint" and drawers.JOINT_FINGER == 4, "finger joint is index 4")
+    check(not drawers._validate_values(dict(DRAWER_A, corner_joint=4, height="20 mm"))[0], "finger joint needs at least two fingers of height")
+    check(not drawers._validate_values(dict(DRAWER_A, corner_joint=4, finger_tolerance="4 mm"))[0], "finger tolerance >= t/4 rejected")
+
+    DRAWER_F = dict(DRAWER_A, corner_joint=4, has_front=False, handle_slot=False)
+    part_f = drawers.create_drawer("Boxed", DRAWER_F)
+    holder_f = cam.drawer_holder(part_f)
+    part_f2 = drawers.create_drawer("Boxed2", dict(DRAWER_F, depth="450 mm"))
+    holder_f2 = cam.drawer_holder(part_f2)
+    check(drawers.read_drawer_values(holder_f)["finger_tolerance"] == "0.05 mm", "tolerance stored on the holder")
+    params_f = cam.DrawerParams(holder_f)
+    check(params_f.finger_joint and params_f.full_walls and params_f.stopped_groove and not params_f.mitered, "DrawerParams flags for finger joints")
+    for dp, dh in ((part_f, holder_f), (part_f2, holder_f2)):
+        check_panels(cam, drawers, dp, dh)  # fingers interlock without interpenetration
+    bodies_f = {r: b for r, b in drawers.drawer_panels(part_f)}
+    side_f, front_f, back_f = bodies_f["SideL"].Shape, bodies_f["Front"].Shape, bodies_f["Back"].Shape
+    check(abs(front_f.BoundBox.XLength - 400) < 1e-6 and abs(side_f.BoundBox.YLength - 500) < 1e-6, "finger walls run full size")
+    col = Part.makeBox(12, 12, 120, FreeCAD.Vector(-200, 238, 0))
+    filled = side_f.fuse(front_f).common(col).Volume
+    check(12 * 12 * 120 - 600 < filled < 12 * 12 * 120 - 1e-6, "corner column filled by side and front teeth up to the tolerance gaps ({:.1f})".format(filled))
+    for z, who in ((6, "side"), (18, "front"), (30, "side"), (114, "front")):
+        probe = Part.makeBox(12, 12, 1, FreeCAD.Vector(-200, 238, z))
+        sv, fv = side_f.common(probe).Volume, front_f.common(probe).Volume
+        check((sv > 100) == (who == "side") and (fv > 100) == (who == "front"), "z = {}: {} tooth in the corner".format(z, who))
+    check(side_f.common(Part.makeBox(12, 12, 0.08, FreeCAD.Vector(-200, 238, 11.96))).Volume < 1e-9
+          and side_f.common(Part.makeBox(12, 12, 0.04, FreeCAD.Vector(-200, 238, 11.90))).Volume > 1e-3, "side slot widened by the 0.05 mm tolerance")
+    # Grooves stopped on every wall (lip solid over the groove band at a tooth), back closed.
+    lip = Part.makeBox(6, 5, 3, FreeCAD.Vector(-194, 244.5, 8.5))
+    mid = Part.makeBox(6, 5, 3, FreeCAD.Vector(-194, -2.5, 8.5))
+    check(abs(side_f.common(lip).Volume - 90) < 1e-6 and side_f.common(mid).Volume < 1e-9, "finger SideL: groove stopped 6 mm short of the end")
+    for role, shape, y0 in (("Front", front_f, 238.0), ("Back", back_f, -244.0)):
+        lip = Part.makeBox(5, 6, 3, FreeCAD.Vector(194.5, y0, 12.5))
+        mid = Part.makeBox(5, 6, 3, FreeCAD.Vector(-2.5, y0, 12.5))
+        check(abs(shape.common(lip).Volume - 90) < 1e-6 and shape.common(mid).Volume < 1e-9, "finger {}: groove stopped 6 mm short of the end".format(role))
+    below = Part.makeBox(100, 6, 7, FreeCAD.Vector(-50, -244, 0.5))
+    check(abs(back_f.common(below).Volume - 100 * 6 * 7) < 1e-6, "finger Back: groove closed (solid below it)")
+    v_side_f = side_f.Volume
+    holder_f.corner_joint = "Mitered"
+    doc.recompute()
+    check(abs(bodies_f["SideL"].Shape.Volume - (720000 - 6 * 8 * 500)) < 1e-3 and abs(bodies_f["Back"].Shape.Volume - (576000 - 6 * 16 * 400)) < 1e-3,
+          "mitered: through grooves again, back open, no fingers")
+    check(all(f.Suppressed for f in bodies_f["SideL"].Group if "Fingers" in f.Name and f.TypeId != "Sketcher::SketchObject"), "mitered: finger pocket and pattern suppressed")
+    holder_f.corner_joint = "Finger joint"
+    doc.recompute()
+    check(abs(bodies_f["SideL"].Shape.Volume - v_side_f) < 1e-6, "finger joint back on")
+
+    results_f, problems, warn_f = cam.run([(part_f, holder_f), (part_f2, holder_f2)], s)
+    check(not problems, "finger run ok: {}".format(problems))
+    fingers = [r for r in results_f if r.sheet is None]
+    sheets_f = [r for r in results_f if r.sheet is not None]
+    check(sorted(r.kind for r in fingers) == ["fronts", "sides"], "one sides and one fronts finger job")
+    check(sorted(r.thickness for r in sheets_f) == [8.0, 12.0], "plus the sheet jobs")
+    fs = [r for r in fingers if r.kind == "sides"][0]
+    ff = [r for r in fingers if r.kind == "fronts"][0]
+    check(fs.job.LumberjackFingers == "sides" and sorted(fs.job.LumberjackDrawers) == sorted([part_f.Name, part_f2.Name]), "finger job records kind and drawers")
+    check(fs.job.Label == "Job Fingers sides 120mm" and fs.frame.Label == "Fingers sides 120mm", "finger job labels: {} / {}".format(fs.job.Label, fs.frame.Label))
+    check(len(fs.job.Model.Group) == 4 and len(ff.job.Model.Group) == 4, "four walls in each stack")
+    check(abs(fs.stack - 48) < 1e-9, "stack 4 x 12 mm")
+    ys = sorted(c.Shape.BoundBox.YMin for c in fs.job.Model.Group)
+    check(all(abs(y - i * 12) < 1e-6 for i, y in enumerate(ys)), "clones stacked along Y at 12 mm pitch: {}".format(ys))
+    for c in fs.job.Model.Group:
+        bb = c.Shape.BoundBox
+        check(abs(bb.XMin) < 1e-6 and abs(bb.XLength - 120) < 1e-6 and abs(bb.ZMax) < 1e-6 and abs(bb.YLength - 12) < 1e-6,
+              "{} stands on end: height along X from 0, end face at Z = 0".format(c.Label))
+        check(abs(bb.ZMin + 500) < 1e-6 or abs(bb.ZMin + 450) < 1e-6, "{} hangs down by its length".format(c.Label))
+    sbb = fs.job.Stock.Shape.BoundBox
+    check(abs(sbb.XMin) < 1e-6 and abs(sbb.XMax - 120) < 1e-6 and abs(sbb.YMin) < 1e-6 and abs(sbb.YMax - 48) < 1e-6
+          and abs(sbb.ZMax) < 1e-6 and abs(sbb.ZMin + 500) < 1e-6, "finger stock is the stack envelope")
+    ops_f = fs.job.Proxy.allOperations()
+    check(len(fs.regions) == 5 and fs.pocket_slots == len(ops_f) == 5 * len(cam.slot_passes(fs.regions[0], d)), "5 slots, every pass a Slot op, no dress-ups")
+    check(sorted(set(o.Label.rsplit("_", 1)[0] for o in ops_f)) == ["Fingers_120mm_sides_Slot{}".format(i) for i in (1, 3, 5, 7, 9)], "sides slots at the odd positions")
+    for o in ops_f:
+        i = int(o.Label.split("_Slot")[1].split("_")[0])
+        band = (i * 12 - 0.05, min(120, (i + 1) * 12 + 0.05))
+        check(abs(o.CustomPoint1.x - o.CustomPoint2.x) < 1e-9 and band[0] + d / 2 - 1e-6 <= o.CustomPoint1.x <= band[1] - d / 2 + 1e-6, "{} pass along Y inside its band".format(o.Label))
+        oy = sorted([o.CustomPoint1.y, o.CustomPoint2.y])
+        check(abs(oy[0] + (5 + d / 2)) < 1e-6 and abs(oy[1] - (48 + 5 + d / 2)) < 1e-6, "{} overshoots 5 mm + r past both stack faces".format(o.Label))
+        check(abs(o.StartDepth.Value) < 1e-6 and abs(o.FinalDepth.Value + 12) < 1e-6, "{} cuts 12 deep from Z = 0".format(o.Label))
+    ops_ff = ff.job.Proxy.allOperations()
+    check(sorted(set(o.Label.rsplit("_", 1)[0] for o in ops_ff)) == ["Fingers_120mm_fronts_Slot{}".format(i) for i in (0, 2, 4, 6, 8)], "fronts slots at the even positions")
+    check(os.path.basename(fs.gcode_files[0]) == "test_Boxed_2_fingers_120mm_sides.nc" and abs(min_z_in_gcode(fs.gcode_files[0]) + 12) < 1e-3, "finger gcode written, 12 deep: {}".format(fs.gcode_files))
+    check(abs(fs.frame.Placement.Base.x - 2 * 693) < 1e-6 and abs(ff.frame.Placement.Base.x - 3 * 693) < 1e-6, "finger frames continue the display pitch")
+    check(fs.job in fs.frame.Group and fs.frame in fs.container.Group and not any("Invalid" in o.State for o in fs.frame.Group), "finger job in its frame, valid")
+    summary_f = "\n".join(cam.summarize_results(results_f, warn_f))
+    check("run once per end" in summary_f and "sacrificial" in summary_f, "summary explains the finger setup")
+    # The sheet job of the finger drawers: no corner/lap ops, every wall's groove stopped flush.
+    sj = [r for r in sheets_f if r.thickness == 12.0][0]
+    ops_s = sj.job.Proxy.allOperations()
+    check(not [o for o in ops_s if "_Corner" in o.Label or "_Lap" in o.Label or "Finger" in o.Label], "sheet job of finger drawers has no corner, lap or finger ops")
+    for role in ("SideL", "Front", "Back"):
+        clone = [c for c in sj.job.Model.Group if c.Objects and c.Objects[0].Name == bodies_f[role].Name][0]
+        placed = [p for p in sj.sheet.items if p.item.key == (part_f.Name, role)][0]
+        cb = clone.Shape.BoundBox
+        gs = [o for o in ops_s if o.Label.startswith("Boxed_{}_Groove".format(role))]
+        check(gs, "Boxed {} has groove passes".format(role))
+        for g in gs:
+            ends = sorted([g.CustomPoint1.y, g.CustomPoint2.y] if placed.rotated else [g.CustomPoint1.x, g.CustomPoint2.x])
+            lo, hi = (cb.YMin, cb.YMax) if placed.rotated else (cb.XMin, cb.XMax)
+            check(abs(ends[0] - lo - 6) < 1e-6 and abs(hi - ends[1] - 6) < 1e-6, "Boxed {} groove pass ends flush on the stop 6 mm inside each end".format(role))
+    back_regions = cam.pocket_regions("Back", params_f, cam.panel_frame("Back", params_f))
+    check(len(back_regions) == 1 and back_regions[0].closed and back_regions[0].flush and abs(back_regions[0].v0 - (-60 + 8)) < 1e-9, "finger back groove: closed band, stopped, flush ends")
+    bad_f = cam.CamSettings()
+    bad_f.__dict__.update(s.__dict__)
+    bad_f.tool_d = 12.0
+    pf, _ = cam.validate_drawer(part_f, params_f, bad_f)
+    check(any("thinner than" in p for p in pf), "12 mm bit rejected for 12 mm finger-jointed stock")
+    bad_f.tool_d = 11.0
+    pf, _ = cam.validate_drawer(part_f, params_f, bad_f)
+    check(pf and not any("finger" in p.lower() for p in pf), "11 mm bit passes the finger slots (only the groove complains): {}".format(pf))
+    n_before_f = len(doc.Objects)
+    results_f2, problems, _ = cam.run([(part_f, holder_f), (part_f2, holder_f2)], s)
+    check(not problems and len(doc.Objects) == n_before_f, "finger re-run replaces the jobs without leaking ({} objects)".format(n_before_f))
+    # Mixed heights: one pair of finger jobs per height, reported.
+    holder_c.corner_joint = "Finger joint"
+    doc.recompute()
+    results_m, problems, warn_m = cam.run([(part_f, holder_f), (part_c, holder_c)], s)
+    check(not problems, "mixed run ok: {}".format(problems))
+    fm = [r for r in results_m if r.sheet is None]
+    check(sorted((r.height, r.kind) for r in fm) == [(100.0, "fronts"), (100.0, "sides"), (120.0, "fronts"), (120.0, "sides")], "two finger job pairs for two heights: {}".format(sorted((r.height, r.kind) for r in fm)))
+    check(any("different heights" in w for w in warn_m), "mixed heights reported")
+    f100 = [r for r in fm if r.height == 100.0 and r.kind == "sides"][0]
+    check(len(f100.job.Model.Group) == 2 and len(f100.regions) == 4 and abs(f100.regions[0].u0 - 12.45) < 1e-9, "100 mm stack: two sides, four slots of pitch 12.5")
+    holder_c.corner_joint = "Tongue and dado (recessed)"
+    doc.recompute()
     # --- recreate a drawer and re-run --------------------------------------------------
     cam.run([(part, holder)], s)
     old_name = part.Name
-    n_jobs = len(cam.find_lumberjack_jobs(doc, [old_name]))
+    # Every Job of the run lists at least one drawer of the (merged) container, the finger
+    # Jobs only the finger-jointed ones, so count over all drawers of the container.
+    n_jobs = len(cam.find_lumberjack_jobs(doc, [p.Name for p in (part, part_c, part_f, part_f2)]))
     new_part = drawers.recreate_drawer(part)
     check(new_part is not None and new_part.Name == old_name, "recreated drawer keeps its name")
     new_holder = cam.drawer_holder(new_part)

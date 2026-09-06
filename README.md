@@ -57,10 +57,14 @@ The drawer is placed inside the currently active container (if any).
 **Options:**
 
 - **Corner joinery** (`corner_joint`): *Tongue and dado (recessed)* (default), *Half-lap*,
-  *Overlap* or *Tongue and dado (flush)* — see **Joinery** below. The choice stays live and
-  editable on the created drawer; switching it re-dimensions the panels and re-shapes or
-  suppresses the joinery pockets. (Drawers created before this option carry an `overlap_box` boolean instead; they
-  keep working and are migrated when recreated.)
+  *Mitered*, *Tongue and dado (flush)* or *Finger joint* — see **Joinery** below. The choice
+  stays live and editable on the created drawer; switching it re-dimensions the panels and
+  re-shapes or suppresses the joinery pockets. (Drawers created before this option carry an
+  `overlap_box` boolean instead; they keep working and are migrated when recreated. *Mitered*
+  was called *Overlap* before; saved drawers keep working.)
+- **Finger joint tolerance** (`finger_tolerance`, default 0.05 mm, enabled for the finger
+  joint only): every finger slot is cut this much wider on each flank (teeth thinner by the
+  same amount), i.e. `4 x` the value of clearance per finger.
 - **Add a dedicated drawer front** (`has_front`): when checked, an extra front panel is
   added with its own parameters:
   - **Front width / Front height** (`width_front`, `height_front`): outer size of the front.
@@ -81,7 +85,9 @@ up the sides and the front, slide the bottom in from the back, then drop the bac
 (Front and Back are therefore not identical parts.) With tongue-and-dado corners the sides'
 groove is a stopped dado, `0.5 * t_side` short of each end, so it does not show on the
 sides' end grain; it ends inside the corner dados, so the bit's round end never leaves the
-dado void and the bottom's square corners still seat.
+dado void and the bottom's square corners still seat. With finger joints every wall's groove
+is stopped `0.5 * t_side` short (inside the fingers) and the back's groove is closed too: the
+box is glued up in one go with the bottom captured.
 
 The corners depend on `corner_joint`. In every variant the sides run the full `depth` and
 carry the corner pocket on their inner face at each end, and the front and back tuck into
@@ -102,8 +108,15 @@ them:
 - **Half-lap:** the side pocket widens to `t_side` and runs out to the end edge (a rabbet).
   The front and back (still `t_side` shorter) sit in it flush with the side ends and need
   no cut of their own. One cut per corner; the bit only has to be `<= t_side`.
-- **Overlap:** no corner pocket; the front and back run the full `width` so all four walls
-  overlap — stock for box joints cut by hand.
+- **Mitered** (formerly *Overlap*): no corner pocket; the front and back run the full
+  `width` so all four walls overlap — stock for corners cut by hand.
+- **Finger joint:** a box joint with square fingers, modelled in the bodies. All four walls
+  run full size. `n = max(2, round(height / t_side))` fingers of pitch `height / n` (exactly
+  `t_side` when the height is a multiple of it) at each corner, `t_side` deep. The sides carry
+  the teeth at the even positions from the bottom edge (a tooth at the bottom edge), the
+  front and back at the odd ones. The slots are one pocket per wall repeated by a
+  `LinearPattern` with an expression-driven count, so height changes stay live. The fingers
+  are not cut on the sheet; the CAM run adds separate **finger Jobs** (below).
 
 **Coordinate system:** The bottom panel is centered on the Part origin in X (width) and Y
 (depth); its bottom face is at `z = 0` (at the default `bottom_v_offset` of 0). The whole
@@ -205,11 +218,24 @@ File > Export or the TechDraw toolbar print it.
   The stock is the whole sheet.
 - **Slot passes** for the bottom groove of the walls, the corner joinery of the walls (the
   end dados or rabbets of the sides and, for the recessed tongue and dado, the end laps of
-  the front/back; none with *Overlap*) and, for a captured bottom, its four rabbet strips.
-  Passes overlap by 50 % of the tool diameter and overshoot open ends; the stopped side
-  grooves of the tongue-and-dado variants end with the tool tangent to the stop. The
-  outer-face laps of the *flush* tongue and dado are not machined; the run summary lists
-  them as a manual cut.
+  the front/back; none with *Mitered* or *Finger joint*) and, for a captured bottom, its four
+  rabbet strips. Passes overlap by 50 % of the tool diameter and overshoot open ends; the
+  stopped side grooves of the tongue-and-dado variants end with the tool tangent to the
+  stop, the stopped grooves of finger-jointed walls with the tool centre on the stop (the
+  bottom reaches the stop; the round end runs on inside the finger). The outer-face laps of
+  the *flush* tongue and dado are not machined; the run summary lists them as a manual cut.
+- **Finger Jobs** (finger-jointed drawers only): per group of drawers with the same height,
+  `t_side` and tolerance, two extra Jobs `Job Fingers sides <h>mm` (SideL/SideR of every
+  drawer of the group) and `Job Fingers fronts <h>mm` (Front/Back), each in its own frame.
+  The walls stand on end, stacked face to face along +Y from Y = 0, bottom (grooved) edges
+  at X = 0, the end face to be cut at Z = 0 — lower-left origin, no orientation options.
+  Every finger slot is a set of Slot passes across the whole stack, `t_side` deep, running
+  5 mm plus a tool radius past both outer faces into **sacrificial boards** clamped there
+  (flush with the end faces) against tear-out. Run each finger Job **once per end**, turning
+  the stack end over end so the bottom edges stay at X = 0. The bit must be thinner than
+  `t_side`. G-code: `<Document>_<container name>_fingers_<h>mm_<sides|fronts>.nc`. No
+  TechDraw page yet. Selecting several finger-jointed drawers of different heights gives one
+  Job pair per height (reported in the summary).
 - **Handle slots** are cut as a through **Profile** of the slot's outline (the four top
   edges of the model clone, inside, tool-compensated) with a **Tags** dress-up: one tab in
   the middle of each straight segment holds the waste piece; knock it out and clean the
@@ -297,7 +323,7 @@ The panel is created as a PartDesign Body with a sketch and pad. All dimensions 
 2. Click "Create Drawer" in the toolbar, use **Lumberjack → Create Drawer**, or press
    **D** in the Lumberjack quick menu.
 3. Enter a name and set the box dimensions (width, height, depth, side/bottom thickness).
-4. Optionally tick **Box joints** for overlapping panels, and **Add a dedicated drawer
+4. Optionally pick the corner joinery (e.g. **Finger joint**), and **Add a dedicated drawer
    front** to enable the front-panel fields.
 5. Click "Create".
 

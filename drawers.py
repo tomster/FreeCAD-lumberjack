@@ -54,12 +54,23 @@ tuck into them.
   - "Half-lap" (1): the side pocket widens to t_side and runs out to the end edge (a
     rabbet); the front and back (still t_side shorter) sit in it flush with the side ends,
     without any cut of their own.
-  - "Overlap" (2): all four walls are dimensioned to fully overlap (box-joint stock), no
-    joint is cut.
+  - "Mitered" (2, formerly "Overlap"): all four walls are dimensioned to fully overlap
+    (stock for corners cut by hand), no joint is cut.
   - "Tongue and dado (flush)" (3): same side dado as (0), but the front and back sit flush
     with the side ends and their lap is on the *outer* face (the inner half is the tongue).
     That lap faces down when the panel lies inner-face-up on the CNC, so CAM does not
     machine it and reports it as a manual cut instead.
+  - "Finger joint" (4): box joint with square fingers. All four walls run full size (like
+    "Mitered"); n = max(2, round(height / t_side)) fingers of pitch p = height / n at each
+    corner, t_side deep, through the thickness. The sides carry the teeth at the even
+    positions counted from the bottom edge (a tooth at the bottom edge), the front and back
+    at the odd ones. Every slot is cut finger_tolerance wider on each flank (teeth thinner
+    by the same amount), so the mating clearance is 4 x finger_tolerance per finger. The
+    slots are one Pocket (two rectangles, one per end) repeated by a LinearPattern along the
+    height with an expression-driven occurrence count. The bottom groove is stopped t_side/2
+    short of each end on all four walls and the back's groove is closed (the box is glued up
+    in one go, the bottom captured during glue-up). CAM does not machine the fingers on the
+    sheet; see cam.py for the vertical finger Jobs.
   Legacy drawers carry an overlap_box boolean instead; corner_joint_of() maps it. The
   index order is append-only: saved drawers bake the indices into their expressions.
 
@@ -134,7 +145,11 @@ HANDLE_FIELDS = [
     ("drawer_handle_v_offset", "Slot offset from top", "20 mm"),
 ]
 
-ALL_FIELDS = BOX_FIELDS + FRONT_FIELDS + HANDLE_FIELDS
+FINGER_FIELDS = [
+    ("drawer_finger_tolerance", "Finger joint tolerance", "0.05 mm"),
+]
+
+ALL_FIELDS = BOX_FIELDS + FRONT_FIELDS + HANDLE_FIELDS + FINGER_FIELDS
 
 # Maps a preference key to the holder property name it drives.
 _KEY_TO_PROP = {
@@ -151,6 +166,7 @@ _KEY_TO_PROP = {
     "drawer_handle_diameter": "handle_diameter",
     "drawer_handle_width": "handle_width",
     "drawer_handle_v_offset": "handle_v_offset",
+    "drawer_finger_tolerance": "finger_tolerance",
 }
 
 # Default expression per holder property; used for properties a (legacy) holder lacks.
@@ -161,19 +177,50 @@ _PROP_DEFAULTS = {_KEY_TO_PROP[key]: default for key, _label, default in ALL_FIE
 CORNER_JOINTS = (
     "Tongue and dado (recessed)",
     "Half-lap",
-    "Overlap",
+    "Mitered",
     "Tongue and dado (flush)",
+    "Finger joint",
 )
-JOINT_TONGUE_DADO, JOINT_HALF_LAP, JOINT_OVERLAP, JOINT_TONGUE_DADO_FLUSH = 0, 1, 2, 3
+JOINT_TONGUE_DADO, JOINT_HALF_LAP, JOINT_MITERED, JOINT_TONGUE_DADO_FLUSH, JOINT_FINGER = (
+    0, 1, 2, 3, 4,
+)
+JOINT_OVERLAP = JOINT_MITERED  # former name of index 2
+_LEGACY_JOINT_NAMES = {"Overlap": JOINT_MITERED}
 
 
 def joint_index(value):
     """Normalise a corner joint given as index, name or legacy overlap bool to its index."""
     if isinstance(value, str):
+        if value in _LEGACY_JOINT_NAMES:
+            return _LEGACY_JOINT_NAMES[value]
         return CORNER_JOINTS.index(value)
     if isinstance(value, bool):
-        return JOINT_OVERLAP if value else JOINT_TONGUE_DADO
+        return JOINT_MITERED if value else JOINT_TONGUE_DADO
     return int(value)
+
+
+def finger_layout(height, t_side, tolerance):
+    """
+    Finger-joint layout for a wall height, mirroring the expressions in create_drawer.
+
+    Returns (n, pitch, side_slots, fb_slots): n fingers of pitch height / n at each corner
+    (n = max(2, round(height / t_side))) and the slot bands [(v0, v1)] measured from the
+    bottom edge, each widened by the tolerance on both flanks and clipped to the panel. The
+    sides have their slots at the odd positions (a tooth at the bottom edge), the front and
+    back at the even ones.
+    """
+    n = max(2, int(round(height / float(t_side))))
+    pitch = height / float(n)
+
+    def bands(first):
+        out = []
+        for i in range(first, n, 2):
+            v0 = max(0.0, i * pitch - tolerance)
+            v1 = min(float(height), (i + 1) * pitch + tolerance)
+            out.append((v0, v1))
+        return out
+
+    return n, pitch, bands(1), bands(0)
 
 
 def corner_joint_of(holder):
@@ -356,6 +403,7 @@ _HOLDER_LENGTH_PROPS = [
     "handle_diameter",
     "handle_width",
     "handle_v_offset",
+    "finger_tolerance",
 ]
 
 
@@ -388,8 +436,10 @@ def create_parameter_holder(doc, part, name, label, values):
         "Drawer",
         "Corner joinery: tongue and dado with the front/back recessed by t_side/2 (all "
         "cuts on the inner faces, fully CNC) or flush (their lap is on the outer face, a "
-        "manual cut), half-lap (sides rabbeted, front/back flush, glue only) or overlap "
-        "(box-joint stock, no joint cut). The sides always run the full depth.",
+        "manual cut), half-lap (sides rabbeted, front/back flush, glue only), mitered "
+        "(full-size walls, corners cut by hand) or finger joint (square fingers of about "
+        "t_side, cut in separate vertical CAM Jobs, clearance 4 x finger_tolerance). The "
+        "sides always run the full depth.",
     )
     holder.corner_joint = list(CORNER_JOINTS)
     holder.addProperty(
@@ -575,6 +625,66 @@ def _cut_handle_slot(doc, body, dia_expr, width_expr, cy_expr, suppress_expr):
     return pocket
 
 
+def _cut_finger_slots(
+    doc, body, role, len_expr, t_expr, v0_expr, dv_expr, count_expr, offset_expr, suppress_expr
+):
+    """
+    Cut the finger-joint slots into a wall: one pocket holding a slot at each end (through
+    the thickness, t deep from the end, overshooting the end by 1 mm), repeated along the
+    height by a LinearPattern.
+
+    role is the datum plane whose sketch X runs along the panel length and whose sketch Y
+    runs along the height (YZ_Plane for the sides, XZ_Plane for the front/back). v0_expr and
+    dv_expr are the first slot's band in body-local Z, count_expr the number of slots and
+    offset_expr their spacing (2 x pitch). suppress_expr drives Suppressed of both features:
+    a Transformed feature silently skips suppressed originals, so it must be suppressed too.
+    """
+    sketch = doc.addObject("Sketcher::SketchObject", "{}_FingersSk".format(body.Name))
+    body.addObject(sketch)
+    plane = _datum_plane(body, role)
+    if plane is not None:
+        sketch.AttachmentSupport = [(plane, "")]
+        sketch.MapMode = "FlatFace"
+    far = _add_positioned_rect(sketch, 20.0, 0.0, 6.0, 6.0)
+    near = _add_positioned_rect(sketch, -26.0, 0.0, 6.0, 6.0)
+    du = "{t} + 1 mm".format(t=t_expr)
+    for (u0_idx, v0_idx, du_idx, dv_idx), u0 in (
+        (far, "({L}) / 2 - {t}".format(L=len_expr, t=t_expr)),
+        (near, "-({L}) / 2 - 1 mm".format(L=len_expr)),
+    ):
+        sketch.setExpression("Constraints[{}]".format(u0_idx), u0)
+        sketch.setExpression("Constraints[{}]".format(du_idx), du)
+        sketch.setExpression("Constraints[{}]".format(v0_idx), v0_expr)
+        sketch.setExpression("Constraints[{}]".format(dv_idx), dv_expr)
+    doc.recompute()
+
+    pocket = doc.addObject("PartDesign::Pocket", "{}_Fingers".format(body.Name))
+    pocket.Profile = sketch
+    body.addObject(pocket)
+    pocket.Type = "ThroughAll"
+    pocket.SideType = "Symmetric"
+    pocket.setExpression("Suppressed", suppress_expr)
+    sketch.Visibility = False
+    doc.recompute()
+
+    pattern = doc.addObject("PartDesign::LinearPattern", "{}_FingersPattern".format(body.Name))
+    body.addObject(pattern)
+    # Body.addObject does not advance the Tip to a Transformed feature (verified on 1.1.3);
+    # without this the pattern would hang off the chain and later features skip it.
+    body.Tip = pattern
+    pattern.Originals = [pocket]
+    pattern.Direction = (sketch, ["V_Axis"])
+    pattern.Mode = "Spacing"
+    pattern.Offset = 24.0
+    pattern.setExpression("Offset", offset_expr)
+    pattern.Occurrences = 1
+    pattern.setExpression("Occurrences", count_expr)
+    pattern.setExpression("Suppressed", suppress_expr)
+    pocket.Visibility = False
+    doc.recompute()
+    return pocket, pattern
+
+
 def _create_body(doc, part, name, label):
     """Create a PartDesign::Body inside the drawer part and return it."""
     body = doc.addObject("PartDesign::Body", name)
@@ -676,7 +786,7 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     Args:
         name: label for the drawer Part (and base for the body labels).
         values: dict of expression strings for the length parameters plus
-                "corner_joint" and the "has_front" boolean (see create_parameter_holder).
+                "corner_joint", "has_front" and "handle_slot" (see create_parameter_holder).
         container: App::Part to add the drawer to; default is the active container.
         placement: Placement for the drawer Part; default is the 180 deg Z rotation.
         internal_name: internal object name to request (used when recreating a drawer
@@ -730,19 +840,26 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     #       t_side/2 behind the side ends -- every cut on an inner face, fully CNC
     #   half-lap (1): pocket t_side wide, out to the end edge; front/back shortened by
     #       t_side, no cut, flush with the side ends
-    #   overlap (2): no pockets, all four walls dimensioned to fully overlap
+    #   mitered (2): no pockets, all four walls dimensioned to fully overlap
     #   tongue and dado, flush (3): side pocket as (0); front/back flush with the side ends,
     #       lapped on the *outer* face (manual cut, see cam.py)
+    #   finger joint (4): full-size walls like (2), with square finger slots at both ends of
+    #       every wall (see _cut_finger_slots); cut in separate vertical Jobs, see cam.py
     # (The expression language has no logical operators, hence the nested ternaries.)
     cj = H("corner_joint")
     recessed = "{cj} == {i}".format(cj=cj, i=JOINT_TONGUE_DADO)
     flush_td = "{cj} == {i}".format(cj=cj, i=JOINT_TONGUE_DADO_FLUSH)
-    overlapping = "{cj} == {i}".format(cj=cj, i=JOINT_OVERLAP)
-    corner_suppress = "{o} ? 1 : 0".format(o=overlapping)
+    mitered = "{cj} == {i}".format(cj=cj, i=JOINT_MITERED)
+    finger = "{cj} == {i}".format(cj=cj, i=JOINT_FINGER)
+    # Mitered and finger-jointed walls run full size and get no corner pocket.
+    full_walls = "{m} ? 1 : ({fj} ? 1 : 0)".format(m=mitered, fj=finger)
+    corner_suppress = full_walls
     # Laps exist for both tongue-and-dado variants only.
     lap_suppress = "{r} ? 0 : ({f} ? 0 : 1)".format(r=recessed, f=flush_td)
     side_len = H("depth")
-    fb_len = "{o} ? {w} : {w} - {ts}".format(o=overlapping, w=H("width"), ts=H("t_side"))
+    fb_len = "{m} ? {w} : ({fj} ? {w} : {w} - {ts})".format(
+        m=mitered, fj=finger, w=H("width"), ts=H("t_side")
+    )
     height = H("height")
     t_side = H("t_side")
     t_bottom = H("t_bottom")
@@ -779,11 +896,31 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     # variants, so it does not show on the side's end grain: the bottom never reaches the
     # side lips, the groove ends inside the corner dados (which cover the full height), and
     # with a bit <= t_side/2 (required for the dado anyway) the rounded end of the CAM slot
-    # stays inside the dado as well. Otherwise the groove runs through (a length past the
-    # depth is the same as ThroughAll).
-    side_groove_len = "{r} ? {d} - {ts} : ({f} ? {d} - {ts} : {d} + 2 mm)".format(
-        r=recessed, f=flush_td, d=H("depth"), ts=H("t_side")
+    # stays inside the dado as well. With finger joints every wall's groove is stopped
+    # t_side/2 short (the stop lies inside the fingers, whose end grain shows outside).
+    # Otherwise the groove runs through (a length past the depth is the same as ThroughAll).
+    side_groove_len = "{r} ? {d} - {ts} : ({f} ? {d} - {ts} : ({fj} ? {d} - {ts} : {d} + 2 mm))".format(
+        r=recessed, f=flush_td, fj=finger, d=H("depth"), ts=H("t_side")
     )
+    fb_groove_len = "{fj} ? {w} - {ts} : {w} + 2 mm".format(fj=finger, w=H("width"), ts=H("t_side"))
+    # A finger-jointed box is glued up in one go with the bottom captured, so its back keeps
+    # the closed groove of the front instead of the open one.
+    back_groove_v0 = "{fj} ? ({g}) : ({o})".format(fj=finger, g=groove_v0, o=open_groove_v0)
+    back_groove_dv = "{fj} ? ({g}) : ({o})".format(fj=finger, g=groove_dv, o=open_groove_dv)
+    # Finger joints (see finger_layout for the same derivation in Python): n fingers of
+    # pitch p over the height, slots widened by the tolerance on each flank. The sides'
+    # slots sit at the odd positions (tooth at the bottom edge), the front's/back's at the
+    # even ones; the LinearPattern repeats the first slot every 2 p.
+    tol = H("finger_tolerance")
+    finger_n = "max(2; round({h} / {ts}))".format(h=H("height"), ts=H("t_side"))
+    finger_p = "{h} / ({n})".format(h=H("height"), n=finger_n)
+    finger_dv = "({p}) + 2 * {tol}".format(p=finger_p, tol=tol)
+    finger_offset = "2 * ({p})".format(p=finger_p)
+    side_finger_v0 = "-{h} / 2 + ({p}) - {tol}".format(h=H("height"), p=finger_p, tol=tol)
+    fb_finger_v0 = "-{h} / 2 - {tol}".format(h=H("height"), tol=tol)
+    side_finger_count = "floor(({n}) / 2)".format(n=finger_n)
+    fb_finger_count = "({n}) - floor(({n}) / 2)".format(n=finger_n)
+    finger_suppress = "{fj} ? 0 : 1".format(fj=finger)
 
     half_w = "{w} / 2 - {ts} / 2".format(w=H("width"), ts=H("t_side"))
     half_d = "{d} / 2 - ({r} ? {ts} : {ts} / 2)".format(
@@ -823,6 +960,10 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
             u0_expr="0", du_expr=half_ts, v0_expr=v0, dv_expr=corner_dv,
             name=pocket_name, suppress_expr=corner_suppress,
         )
+    _cut_finger_slots(
+        doc, side_l, "YZ_Plane", side_len, t_side, side_finger_v0, finger_dv,
+        side_finger_count, finger_offset, finger_suppress,
+    )
     _cut_handle_slot(
         doc, side_l, H("handle_diameter"), H("handle_width"), handle_cy, handle_suppress
     )
@@ -844,6 +985,10 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
             v0_expr=v0, dv_expr=corner_dv,
             name=pocket_name, suppress_expr=corner_suppress,
         )
+    _cut_finger_slots(
+        doc, side_r, "YZ_Plane", side_len, t_side, side_finger_v0, finger_dv,
+        side_finger_count, finger_offset, finger_suppress,
+    )
     _cut_handle_slot(
         doc, side_r, H("handle_diameter"), H("handle_width"), handle_cy, handle_suppress
     )
@@ -855,7 +1000,8 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     _cut_pocket(
         doc, back, "YZ_Plane",
         u0_expr="0", du_expr=groove_depth,
-        v0_expr=open_groove_v0, dv_expr=open_groove_dv,
+        v0_expr=back_groove_v0, dv_expr=back_groove_dv,
+        length_expr=fb_groove_len,
     )
     for pocket_name, u0 in (("LapLeft", lap_left_u0), ("LapRight", lap_right_u0)):
         _cut_pocket(
@@ -863,6 +1009,10 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
             u0_expr=u0, du_expr=half_ts, v0_expr=back_lap_v0, dv_expr=half_ts,
             name=pocket_name, suppress_expr=lap_suppress,
         )
+    _cut_finger_slots(
+        doc, back, "XZ_Plane", fb_len, t_side, fb_finger_v0, finger_dv,
+        fb_finger_count, finger_offset, finger_suppress,
+    )
     _set_placement(back, y_expr="-({})".format(half_d), z_expr="{} / 2".format(height))
 
     # --- Front wall (inner face -Y) ------------------------------------------
@@ -872,6 +1022,7 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
         doc, front, "YZ_Plane",
         u0_expr="-({})".format(groove_depth), du_expr=groove_depth,
         v0_expr=groove_v0, dv_expr=groove_dv,
+        length_expr=fb_groove_len,
     )
     for pocket_name, u0 in (("LapLeft", lap_left_u0), ("LapRight", lap_right_u0)):
         _cut_pocket(
@@ -880,6 +1031,10 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
             v0_expr=front_lap_v0, dv_expr=half_ts,
             name=pocket_name, suppress_expr=lap_suppress,
         )
+    _cut_finger_slots(
+        doc, front, "XZ_Plane", fb_len, t_side, fb_finger_v0, finger_dv,
+        fb_finger_count, finger_offset, finger_suppress,
+    )
     _set_placement(front, y_expr=half_d, z_expr="{} / 2".format(height))
 
     # --- Bottom panel (rabbeted, sits in the wall grooves) -------------------
@@ -1229,6 +1384,16 @@ class CreateDrawerDialog(QtWidgets.QDialog):
             joint_row.addWidget(self.joint_combo, 1)
             layout.addLayout(joint_row)
 
+            self.finger_group = QtWidgets.QGroupBox("Finger joint")
+            finger_layout_ = QtWidgets.QVBoxLayout(self.finger_group)
+            for key, label_text, _default in FINGER_FIELDS:
+                self._add_field_row(finger_layout_, label_text, _KEY_TO_PROP[key])
+            layout.addWidget(self.finger_group)
+            self.joint_combo.currentIndexChanged.connect(
+                lambda i: self.finger_group.setEnabled(i == JOINT_FINGER)
+            )
+            self.finger_group.setEnabled(self.joint_combo.currentIndex() == JOINT_FINGER)
+
             # has_front checkbox
             self.front_check = QtWidgets.QCheckBox("Add a dedicated drawer front")
             if self.existing_values is not None:
@@ -1409,7 +1574,8 @@ def _validate_values(values):
         off = probe.bottom_v_offset.Value
         # Inserted bottom (tb < ts): groove top is at offset + 2 * tb; captured: offset + tb.
         groove_top = off + (2 * tb if tb < ts else tb)
-        recessed = joint_index(values.get("corner_joint", JOINT_TONGUE_DADO)) == JOINT_TONGUE_DADO
+        joint = joint_index(values.get("corner_joint", JOINT_TONGUE_DADO))
+        recessed = joint == JOINT_TONGUE_DADO
         depth_factor = 3 if recessed else 2
         checks = [
             (ts > 0, "side thickness must be > 0"),
@@ -1423,6 +1589,13 @@ def _validate_values(values):
             ),
             (h > groove_top, "height must be greater than the top of the bottom groove"),
         ]
+        if joint == JOINT_FINGER:
+            tol = probe.finger_tolerance.Value
+            checks += [
+                (h >= 2 * ts, "height must be at least 2 x side thickness for finger joints"),
+                (tol >= 0, "finger joint tolerance must be >= 0"),
+                (tol < ts / 4.0, "finger joint tolerance must be smaller than a quarter of the side thickness"),
+            ]
         if values.get("handle_slot"):
             hd = probe.handle_diameter.Value
             hw = probe.handle_width.Value

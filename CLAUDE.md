@@ -59,19 +59,37 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   and the corner/lap pockets are switched off via an expression on the pocket's
   `Suppressed` property.
 - Corner joinery is the `corner_joint` enumeration (`drawers.CORNER_JOINTS`: tongue and
-  dado recessed / half-lap / overlap / tongue and dado flush — **append-only**, saved
-  drawers bake the indices into their expressions; read it via `corner_joint_of`, which
-  indexes the holder's own list). One orientation for all: sides run the full depth and
-  carry the `Corner*` pocket at each end (`t_side/2` dado or `t_side` rabbet), front/back
-  are `t_side` shorter; the tongue-and-dado variants add `Lap*` pockets — inner face +
-  `t_side/2` recess (machined) or outer face + flush (not machinable face-up; CAM emits a
-  manual-cut warning instead). It is modelled in the bodies *and* re-derived in `cam.py`
+  dado recessed / half-lap / mitered (labelled "Overlap" until 2026-09; renaming an entry is
+  fine, `corner_joint_of` indexes the holder's own list, `joint_index` maps the old name) /
+  tongue and dado flush / finger joint — **append-only**, saved drawers bake the indices
+  into their expressions). One orientation for all: sides run the full depth and carry the
+  `Corner*` pocket at each end (`t_side/2` dado or `t_side` rabbet), front/back are
+  `t_side` shorter except with mitered/finger (`full_walls`: all four walls full size, no
+  corner pocket); the tongue-and-dado variants add `Lap*` pockets — inner face + `t_side/2`
+  recess (machined) or outer face + flush (not machinable face-up; CAM emits a manual-cut
+  warning instead). It is modelled in the bodies *and* re-derived in `cam.py`
   (`DrawerParams`, `pocket_regions`); change both in lock-step — `test_cam.check_panels`
   pins them together (panel bbox vs. `panel_frame`, plus a pairwise no-interpenetration
-  check). The expression language has no `||`/`&&`; use nested ternaries. With the
-  tongue-and-dado variants the sides' bottom groove is a *stopped* pocket (`_cut_pocket`
-  `length_expr`, `cam.Region(closed=True)` — passes end a tool radius inside instead of
-  overshooting). Handle slots (`handle_slot` + three lengths) are a stadium sketch
+  check). The expression language has no `||`/`&&`; use nested ternaries (function args
+  are separated by `;`: `max(2; round(h / t))`). With the tongue-and-dado variants the
+  sides' bottom groove is a *stopped* pocket (`_cut_pocket` `length_expr`,
+  `cam.Region(closed=True)` — passes end a tool radius inside instead of overshooting);
+  with finger joints every wall's groove is stopped and the back's is closed, and CAM uses
+  `Region(closed=True, flush=True)` — passes end with the tool centre on the stop.
+- Finger joints: `drawers.finger_layout(h, t, tol)` is the single Python derivation of the
+  pattern (n, pitch, slot bands for sides/fronts) and mirrors the holder expressions; the
+  slots are one Pocket (two rectangles, one per end) plus a `PartDesign::LinearPattern`
+  (`Mode="Spacing"`, `Offset` = 2 pitch, `Occurrences` expression — `PropertyInteger`
+  rounds a double result). Gotchas (1.1.3): `Body.addObject(pattern)` does **not** advance
+  the Tip to a Transformed feature — set `body.Tip = pattern` or later features skip it;
+  a Transformed feature silently drops suppressed originals and then leaves its shape
+  alone, so the pattern's `Suppressed` must follow its pocket's. CAM: `finger_groups` keys
+  by (height, t_side, tolerance); `build_finger_job` makes the `sides`/`fronts` Job with
+  the wall clones stood on end (`_place_finger_clone`: height → +X from 0, stack along +Y,
+  end face at Z = 0), stock = stack envelope, `finger_regions` → Slot passes with
+  `overshoot=FINGER_OVERSHOOT`, no tabs, no page. Results are `FingerJobResult`s with
+  `sheet = None` (that is how `summarize_results` and the tests tell them apart). Jobs carry
+  `LumberjackFingers` = kind. Handle slots (`handle_slot` + three lengths) are a stadium sketch
   (`_add_slot`, endpoint tangencies like the Sketcher slot tool) pocketed through each
   side. CAM cuts them as a `Path.Op.Profile` (Side Inside, UseComp) on the clone's four
   top-face slot edges, found by geometry in `_slot_top_edges`, plus a Tags dress-up with a

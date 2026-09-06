@@ -18,8 +18,10 @@ Workflow
    chosen reference corner at the origin: top-left (X to the right, Y negative towards
    the operator) or bottom-left (Y positive). Panels hug the two edges at that corner.
    Operations: Slot passes for the bottom groove, the corner joinery and the bottom's
-   perimeter rabbet; one Slot per merged cut line with a Tags dress-up. Finally each Job
-   is post-processed to <docdir>/<Doc>_CAM_<t>mm_<n>.nc.
+   perimeter rabbet; one Slot per merged cut line with a Tags dress-up. Finger-jointed
+   drawers additionally get a "sides" and a "fronts" finger Job per height (see Geometry).
+   Finally each Job is post-processed to <docdir>/<Doc>_<group>_<t>mm_<n>.nc
+   (<Doc>_<group>_fingers_<h>mm_<sides|fronts>.nc for the finger Jobs).
 4. Running the command again re-nests and replaces the Jobs of the selected drawers.
 
 Geometry
@@ -38,7 +40,16 @@ a corner pocket on their inner face at each end; the front and back tuck into th
       face and cannot be reached with the panel lying inner-face-up, so it is not machined
       and validate_drawer reports it as a manual cut
   half-lap: pocket t_side wide out to the end edge; front/back t_side shorter, no cut
-  overlap: no pockets, all four walls fully overlap
+  mitered: no pockets, all four walls run full size and overlap
+  finger joint: full-size walls like mitered; the fingers are NOT machined on the sheet
+      (the walls are nested as plain rectangles, every wall's groove stopped t_side/2 short
+      of the ends with the bit's round end running on into the fingers). Instead each run
+      adds one pair of *finger Jobs* per (height, t_side, tolerance): "sides" (SideL/SideR
+      of every finger-jointed drawer) and "fronts" (Front/Back). The panels stand on end,
+      stacked face to face along +Y from Y = 0, bottom (grooved) edges at X = 0, the end
+      face at Z = 0 (lower-left origin, no orientation options); every slot is a set of Slot
+      passes across the whole stack, FINGER_OVERSHOOT + tool radius past both stack faces
+      into sacrificial boards, t_side deep. Each finger Job is run once per panel end.
 Optional handle slots (handle_slot) are through stadiums in the sides, cut as a Profile op
 on the slot's top edges of the model clone (inside, tool-compensated) with a Tags dress-up
 holding the waste piece by one tab on each straight segment.
@@ -85,6 +96,7 @@ ORIGINS = (ORIGIN_TOP_LEFT, ORIGIN_BOTTOM_LEFT)
 CLAMP_CLEARANCE_EXTRA = 2.0
 PASS_OVERLAP = 0.5  # step-over between parallel slot passes as fraction of tool diameter
 PASS_EXTENSION_EXTRA = 1.0  # mm beyond the tool radius that open-ended passes overshoot
+FINGER_OVERSHOOT = 5.0  # mm beyond the tool radius that finger slot passes run into the sacrificial boards
 JOB_GAP_FRACTION = 0.10  # gap between Jobs displayed side by side, as fraction of the sheet width
 RAPID_DEFAULT = "1200 mm/min"
 
@@ -130,10 +142,25 @@ class DrawerParams:
         self.handle_diameter = _qty(getattr(holder, "handle_diameter", 0.0))
         self.handle_width = _qty(getattr(holder, "handle_width", 0.0))
         self.handle_v_offset = _qty(getattr(holder, "handle_v_offset", 0.0))
+        self.finger_tolerance = _qty(getattr(holder, "finger_tolerance", 0.05))
 
     @property
-    def overlap_box(self):
-        return self.corner_joint == _drawers.JOINT_OVERLAP
+    def mitered(self):
+        return self.corner_joint == _drawers.JOINT_MITERED
+
+    @property
+    def finger_joint(self):
+        return self.corner_joint == _drawers.JOINT_FINGER
+
+    @property
+    def full_walls(self):
+        """Mitered or finger-jointed: all four walls run full size, no corner pockets."""
+        return self.mitered or self.finger_joint
+
+    @property
+    def stopped_groove(self):
+        """The bottom groove is stopped t_side / 2 short of the panel ends (see pocket_regions)."""
+        return self.dadoed or self.finger_joint
 
     @property
     def recessed(self):
@@ -152,7 +179,7 @@ class DrawerParams:
 
     # Same derivations as drawers.create_drawer(): the sides always run the full depth
     # and carry the corner pockets, the front and back are shortened by t_side and tuck
-    # into them (unless overlap_box dimensions all four walls to fully overlap). Only the
+    # into them (unless full_walls dimensions all four walls to fully overlap). Only the
     # recessed tongue-and-dado variant sets the front and back back by t_side / 2.
     @property
     def side_len(self):
@@ -160,7 +187,7 @@ class DrawerParams:
 
     @property
     def fb_len(self):
-        return self.width if self.overlap_box else self.width - self.t_side
+        return self.width if self.full_walls else self.width - self.t_side
 
     @property
     def bottom_x(self):
@@ -272,17 +299,22 @@ class Region:
     A rectangular pocket in the panel frame, machined with parallel slot passes.
 
     Open-ended regions (the default) reach a panel edge along the pass direction and the
-    passes overshoot them; a closed region is a stopped pocket whose passes end with the
-    tool's round end tangent to the region boundary.
+    passes overshoot them by the tool radius plus overshoot (PASS_EXTENSION_EXTRA unless
+    given); a closed region is a stopped pocket whose passes end with the tool's round end
+    tangent to the region boundary; a flush region's passes end with the tool centre on the
+    boundary, so the round end runs on by a tool radius (used where the stop lies inside a
+    joint and the pocket must be cleared right up to the boundary).
     """
 
-    def __init__(self, name, u0, u1, v0, v1, depth, along, closed=False):
+    def __init__(self, name, u0, u1, v0, v1, depth, along, closed=False, flush=False, overshoot=None):
         self.name = name
         self.u0, self.u1 = min(u0, u1), max(u0, u1)
         self.v0, self.v1 = min(v0, v1), max(v0, v1)
         self.depth = depth
         self.along = along  # "u" or "v": direction of the passes
         self.closed = closed
+        self.flush = flush
+        self.overshoot = overshoot
 
     @property
     def width_across(self):
@@ -302,12 +334,16 @@ def pocket_regions(role, p, frame):
         # the sides' groove is stopped ts/2 short of each end so it does not show on the
         # end grain; it ends inside the corner dados, so the slot's round end (bit <= ts/2)
         # never leaves the dado void and the bottom's square corners still seat.
-        stopped = p.dadoed and role in ("SideL", "SideR")
+        # Finger joints: every wall's groove is stopped ts/2 short and the back's is closed
+        # (the box is glued up in one go). The bottom's tongue reaches the stop, so the
+        # passes end flush on it and the round end runs on into the fingers (lip ts/2 - r).
+        stopped = p.stopped_groove and (p.finger_joint or role in ("SideL", "SideR"))
         gu = L / 2.0 - (ts / 2.0 if stopped else 0.0)
+        open_bottom = role == "Back" and not p.finger_joint
         regions.append(Region("Groove", -gu, gu,
-                              -W / 2.0 if role == "Back" else g0, g1, ts / 2.0, "u",
-                              closed=stopped))
-        if not p.overlap_box:
+                              -W / 2.0 if open_bottom else g0, g1, ts / 2.0, "u",
+                              closed=stopped, flush=p.finger_joint))
+        if not p.full_walls:
             # SideR's and Back's panel-frame U points against the drawer axis, so the
             # names follow the flipped end (they match the pocket names in drawers.py).
             f = -1.0 if role in ("SideR", "Back") else 1.0
@@ -351,6 +387,22 @@ def handle_outline(role, p, frame):
     return (-p.handle_width / 2.0, p.handle_width / 2.0, top - p.handle_diameter, top)
 
 
+def finger_regions(p, kind, stack):
+    """
+    Finger-slot regions of a finger Job in job coordinates: u = X along the panel height
+    from the bottom edge, v = Y through the stack (0..stack), passes along v overshooting
+    FINGER_OVERSHOOT past both stack faces, t_side deep. kind is "sides" or "fronts".
+    Region names carry the finger position counted from the bottom edge.
+    """
+    n, pitch, side_slots, fb_slots = _drawers.finger_layout(p.height, p.t_side, p.finger_tolerance)
+    first, bands = (1, side_slots) if kind == "sides" else (0, fb_slots)
+    return [
+        Region("Slot{}".format(first + 2 * j), v0, v1, 0.0, stack, p.t_side, "v",
+               overshoot=FINGER_OVERSHOOT)
+        for j, (v0, v1) in enumerate(bands)
+    ]
+
+
 def slot_passes(region, tool_d):
     """
     Parallel center-line passes covering a region.
@@ -369,7 +421,7 @@ def slot_passes(region, tool_d):
         raise ToolTooWide(
             "{}: pocket is {:.2f} mm wide, tool is {:.2f} mm".format(region.name, w, tool_d)
         )
-    if region.closed and a1 - a0 < tool_d - eps:
+    if region.closed and not region.flush and a1 - a0 < tool_d - eps:
         raise ToolTooWide(
             "{}: stopped pocket is {:.2f} mm long, tool is {:.2f} mm".format(
                 region.name, a1 - a0, tool_d
@@ -381,7 +433,13 @@ def slot_passes(region, tool_d):
         n = int(math.ceil((w - tool_d) / (PASS_OVERLAP * tool_d))) + 1
         step = (w - tool_d) / (n - 1)
         centers = [b0 + tool_d / 2.0 + i * step for i in range(n)]
-    ext = -tool_d / 2.0 if region.closed else tool_d / 2.0 + PASS_EXTENSION_EXTRA
+    if region.flush:
+        ext = 0.0
+    elif region.closed:
+        ext = -tool_d / 2.0
+    else:
+        extra = PASS_EXTENSION_EXTRA if region.overshoot is None else region.overshoot
+        ext = tool_d / 2.0 + extra
     passes = []
     for i, c in enumerate(centers):
         start, end = a0 - ext, a1 + ext
@@ -439,6 +497,26 @@ def validate_drawer(part, params, settings):
         return problems, warnings
     clearance = nesting.edge_clearance(d)
     max_u, max_v = settings.sheet_w - clearance, settings.sheet_h - clearance
+    if params.finger_joint:
+        ts = params.t_side
+        if d >= ts - 1e-6:
+            problems.append(
+                "{}: finger joint - the {:.2f} mm bit must be thinner than the {:g} mm side "
+                "thickness (lip of the stopped bottom groove)".format(label, d, ts)
+            )
+        for kind in ("sides", "fronts"):
+            for region in finger_regions(params, kind, ts):
+                try:
+                    slot_passes(region, d)
+                except ToolTooWide as e:
+                    problems.append("{} finger {}: {}".format(label, kind, e))
+        ceh = settings.cutting_edge_height
+        if ceh is not None and ceh < ts:
+            warnings.append(
+                "{}: cutting edge {:.1f} mm is shorter than the {:g} mm finger depth".format(
+                    label, ceh, ts
+                )
+            )
     if params.manual_laps:
         warnings.append(
             "{}: flush tongue and dado - the laps of Front and Back are on the OUTER face "
@@ -874,14 +952,19 @@ def _setup_stock(job, doc, settings, thickness):
     The stock is the whole sheet: X 0..sheet_w, Z -t..0 and Y -sheet_h..0 (top-left
     origin) or 0..sheet_h (bottom-left origin).
     """
+    y0 = -settings.sheet_h if settings.origin == ORIGIN_TOP_LEFT else 0.0
+    return _set_stock_box(
+        job, doc, Vector(settings.sheet_w, settings.sheet_h, thickness), Vector(0, y0, -thickness)
+    )
+
+
+def _set_stock_box(job, doc, extent, base):
+    """Replace the Job's stock with a box of the given extent whose min corner is at base."""
     import Path.Main.Stock as PathStock
 
-    y0 = -settings.sheet_h if settings.origin == ORIGIN_TOP_LEFT else 0.0
     old = job.Stock
     stock = PathStock.CreateBox(
-        job,
-        extent=Vector(settings.sheet_w, settings.sheet_h, thickness),
-        placement=FreeCAD.Placement(Vector(0, y0, -thickness), FreeCAD.Rotation()),
+        job, extent=extent, placement=FreeCAD.Placement(base, FreeCAD.Rotation())
     )
     job.Stock = stock
     if old is not None:
@@ -1160,6 +1243,27 @@ def _place_clone(doc, clone, frame, placed, origin):
     doc.recompute()
 
 
+def _place_finger_clone(doc, clone, frame, y0):
+    """
+    Stand a wall clone on end for a finger Job: panel height along +X (bottom edge at
+    X = 0), thickness along Y (face at Y = y0), length along -Z (machined end face at Z = 0).
+    """
+    V, N, U = frame.V, frame.N, frame.U
+    m = FreeCAD.Matrix(
+        V.x, V.y, V.z, 0,
+        -N.x, -N.y, -N.z, 0,
+        -U.x, -U.y, -U.z, 0,
+        0, 0, 0, 1,
+    )
+    clone.Placement = FreeCAD.Placement(Vector(0, 0, 0), FreeCAD.Rotation(m))
+    doc.recompute()
+    bb = clone.Shape.BoundBox
+    pl = clone.Placement
+    pl.Base = pl.Base + Vector(-bb.XMin, y0 - bb.YMin, -bb.ZMax)
+    clone.Placement = pl
+    doc.recompute()
+
+
 def layout_to_job(u, v, origin):
     """
     Layout frame (u right, v away from the reference edge along X) -> job XY.
@@ -1353,6 +1457,129 @@ def build_sheet_job(doc, sheet, thickness, sheet_no, settings, out_dir, containe
     return result
 
 
+def finger_groups(drawers):
+    """
+    Finger-jointed drawers grouped by (height, t_side, tolerance): the panels of one group
+    share a finger pattern and stand together in one stack. Returns [(key, [(part, holder,
+    params)])] sorted by key.
+    """
+    groups = {}
+    for part, holder in drawers:
+        params = DrawerParams(holder)
+        if not params.finger_joint:
+            continue
+        key = (round(params.height, 2), round(params.t_side, 2), round(params.finger_tolerance, 3))
+        groups.setdefault(key, []).append((part, holder, params))
+    return [(key, groups[key]) for key in sorted(groups)]
+
+
+FINGER_KINDS = ("sides", "fronts")
+FINGER_ROLES = {"sides": ("SideL", "SideR"), "fronts": ("Front", "Back")}
+
+
+class FingerJobResult:
+    """Result of one finger Job (a stack of same-height walls, one slot pattern)."""
+
+    sheet = None  # tells the summary and callers apart from a SheetJobResult
+    cut_slots = 0
+    disabled_tabs = ()
+    page = None
+
+    def __init__(self, job, kind, height, t_side, panels):
+        self.job = job
+        self.kind = kind
+        self.height = height
+        self.t_side = t_side
+        self.thickness = t_side
+        self.panels = panels  # [PanelRef] in stack order (Y = index * t_side)
+        self.regions = []
+        self.pocket_slots = 0
+        self.gcode_files = []
+        self.container = None
+        self.frame = None
+
+    @property
+    def stack(self):
+        return len(self.panels) * self.t_side
+
+    @property
+    def drawers(self):
+        return sorted({r.part.Label for r in self.panels})
+
+
+def build_finger_job(doc, key, group, kind, settings, out_dir, container, x_offset=0.0):
+    """
+    Create the finger Job of one kind ("sides" or "fronts") for a finger group.
+
+    The wall clones stand on end in a stack along +Y (see _place_finger_clone), the stock
+    is the stack's envelope, and every finger slot is a set of Slot passes across the stack
+    (FINGER_OVERSHOOT + tool radius past both faces, t_side deep) - no tabs. The user runs the
+    Job once per panel end, keeping the bottom edges at X = 0.
+    """
+    height, t, _tol = key
+    panels = []
+    for part, holder, params in group:
+        bodies = dict(drawer_panels(part))
+        for role in FINGER_ROLES[kind]:
+            body = bodies.get(role)
+            if body is not None:
+                panels.append(PanelRef(part, holder, params, role, body, panel_frame(role, params)))
+    drawer_names = sorted({r.part.Name for r in panels})
+    label = "Fingers {} {:g}mm".format(kind, height)
+    if set(drawer_names) != set(container.LumberjackDrawers):
+        label += " ({})".format(", ".join(sorted({r.part.Label for r in panels})))
+    frame_obj = _create_sheet_frame(doc, container, label, x_offset)
+    job = _create_job(doc, [r.body for r in panels], "Job " + label)
+    job.LumberjackDrawers = drawer_names
+    job.LumberjackThickness = float(t)
+    job.LumberjackSheet = 0
+    job.addProperty(
+        "App::PropertyString", "LumberjackFingers", "Lumberjack",
+        "Finger Job: the walls standing in its stack (sides or fronts)",
+    )
+    job.LumberjackFingers = kind
+    group_slug = _sanitize(re.sub(r"^CAM\s+", "", container.Label))
+    out_path = os.path.join(
+        out_dir,
+        "{}_{}_fingers_{:g}mm_{}.nc".format(_sanitize(doc.Label), group_slug, height, kind),
+    )
+    _configure_job(job, settings, out_path)
+    result = FingerJobResult(job, kind, height, t, panels)
+    result.container = container
+    result.frame = frame_obj
+
+    by_body = {r.body.Name: i for i, r in enumerate(panels)}
+    for clone in list(job.Model.Group):
+        src = clone.Objects[0] if getattr(clone, "Objects", None) else None
+        if src is None or src.Name not in by_body:
+            continue
+        i = by_body[src.Name]
+        _place_finger_clone(doc, clone, panels[i].frame, i * t)
+
+    tc = _setup_tool(job, doc, settings)
+    max_len = max(r.frame.L for r in panels)
+    stack = result.stack
+    _set_stock_box(job, doc, Vector(height, stack, max_len), Vector(0, 0, -max_len))
+
+    params = panels[0].params
+    result.regions = finger_regions(params, kind, stack)
+    for region in result.regions:
+        for k, ((u0, v0), (u1, v1)) in enumerate(slot_passes(region, settings.tool_d)):
+            _make_slot(
+                job,
+                "Fingers_{:g}mm_{}_{}_{}".format(height, kind, region.name, k + 1),
+                tc, Vector(u0, v0, 0), Vector(u1, v1, 0), 0.0, t, settings.step_down,
+            )
+            result.pocket_slots += 1
+    doc.recompute()
+
+    frame_obj.addObject(job)  # last, see build_sheet_job
+    doc.recompute()
+    if settings.write_gcode:
+        result.gcode_files = post_process(job, doc)
+    return result
+
+
 def run(drawers, settings):
     """
     Validate, nest and build the sheet Jobs for [(part, holder)].
@@ -1438,6 +1665,22 @@ def run(drawers, settings):
             results.append(
                 build_sheet_job(
                     doc, sheet, thickness, sheet.index + 1, settings, out_dir, container,
+                    x_offset=len(results) * pitch,
+                )
+            )
+    groups = finger_groups(drawers)
+    if len(groups) > 1:
+        warnings.append(
+            "finger-jointed drawers of {} different heights/thicknesses: one pair of finger "
+            "Jobs per group ({})".format(
+                len(groups), ", ".join("{:g} mm".format(k[0]) for k, _g in groups)
+            )
+        )
+    for key, group in groups:
+        for kind in FINGER_KINDS:
+            results.append(
+                build_finger_job(
+                    doc, key, group, kind, settings, out_dir, container,
                     x_offset=len(results) * pitch,
                 )
             )
@@ -1664,6 +1907,20 @@ def summarize_results(results, warnings, origin=ORIGIN_TOP_LEFT):
         )
     for r in results:
         s = r.sheet
+        if s is None:  # finger Job
+            lines.append(
+                "{}: {} walls on end in a {:g} mm stack, {} finger slots ({} passes, {:g} mm deep), "
+                "run once per end{}".format(
+                    r.job.Label, len(r.panels), r.stack, len(r.regions), r.pocket_slots, r.t_side,
+                    ", G-code: " + ", ".join(r.gcode_files) if r.gcode_files else "",
+                )
+            )
+            lines.append(
+                "  clamp: bottom (grooved) edges at X = 0, end faces flush at Z = 0, faces stacked "
+                "along +Y from Y = 0; sacrificial boards flush on both outer faces (passes run "
+                "{:g} mm + tool radius past them)".format(FINGER_OVERSHOOT)
+            )
+            continue
         lines.append(
             "{}: {} panels, blank at least {:.0f} x {:.0f} mm, {} pocket passes, {} cuts{}".format(
                 r.job.Label, len(s.items), s.used_w, s.used_h, r.pocket_slots, r.cut_slots,
