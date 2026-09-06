@@ -122,6 +122,28 @@ def test_geometry(cam, nesting):
     check(sheets[0].items[0].rotated, "panel longer than the sheet width is rotated")
 
 
+def check_panels(cam, drawers, part, holder):
+    """Panel solids match the frames cam.py derives, and the box panels do not overlap."""
+    import Part
+
+    params = cam.DrawerParams(holder)
+    bodies = {}
+    for role, body in drawers.drawer_panels(part):
+        bodies[role] = body
+        frame = cam.panel_frame(role, params)
+        bb = body.Shape.BoundBox
+        got = sorted([bb.XLength, bb.YLength, bb.ZLength])
+        want = sorted([frame.L, frame.W, frame.t])
+        check(all(abs(a - b) < 1e-6 for a, b in zip(got, want)),
+              "{} {}: solid {} matches the CAM frame {}".format(part.Label, role, got, want))
+    box = [r for r in ("SideL", "SideR", "Front", "Back", "Bottom") if r in bodies]
+    for i, ra in enumerate(box):
+        for rb in box[i + 1:]:
+            v = bodies[ra].Shape.common(bodies[rb].Shape).Volume
+            check(v < 1e-6, "{}: {} and {} do not interpenetrate ({:.3f} mm3)".format(
+                part.Label, ra, rb, v))
+
+
 def main():
     import cam
     import drawers
@@ -143,15 +165,15 @@ def main():
     # --- drawer model: inserted bottom (8 < 12) ------------------------------------
     bodies = {b.Name.rsplit("_", 1)[-1]: b for b in part.Group if b.TypeId == "PartDesign::Body"}
     bot = bodies["Bottom"]
-    check(abs(bot.Shape.Volume - 388.0 * 488.0 * 8.0) < 1e-3, "inserted bottom keeps its full thickness")
+    check(abs(bot.Shape.Volume - 388.0 * 476.0 * 8.0) < 1e-3, "inserted bottom keeps its full thickness")
     check(abs(bot.Shape.BoundBox.ZMin - 8.0) < 1e-6, "inserted bottom sits 8 mm up")
     holder.setExpression("t_bottom", None)
     holder.t_bottom = "12 mm"
     doc.recompute()
-    check(bot.Shape.Volume < 388.0 * 488.0 * 12.0 - 1.0, "captured bottom (12 == 12) gets the rabbet")
+    check(bot.Shape.Volume < 388.0 * 476.0 * 12.0 - 1.0, "captured bottom (12 == 12) gets the rabbet")
     holder.t_bottom = "8 mm"
     doc.recompute()
-    check(abs(bot.Shape.Volume - 388.0 * 488.0 * 8.0) < 1e-3, "back to inserted after resetting")
+    check(abs(bot.Shape.Volume - 388.0 * 476.0 * 8.0) < 1e-3, "back to inserted after resetting")
 
     bit = pick_bit(cam)
     d = bit.diameter
@@ -181,6 +203,11 @@ def main():
     # --- second drawer, nested together ---------------------------------------------
     part_c = drawers.create_drawer("Captured", DRAWER_C)
     holder_c = cam.drawer_holder(part_c)
+
+    # The solids in drawers.py and the dimensions cam.py re-derives must agree, and with
+    # the corner joinery modelled the box panels must no longer interpenetrate.
+    for dp, dh in ((part, holder), (part_c, holder_c)):
+        check_panels(cam, drawers, dp, dh)
     results, problems, warnings = cam.run([(part, holder), (part_c, holder_c)], s)
     check(not problems, "run succeeded: {}".format(problems))
     by_t = {}
@@ -304,9 +331,12 @@ def main():
         check(abs(g.FinalDepth.Value + 6) < 1e-6, "groove depth 6")
     check([o for o in ops if o.Label.startswith("Captured_Bottom_Rabbet")], "captured bottom has rabbet passes")
     check(not [o for o in ops if o.Label.startswith("Drawer_Bottom_Rabbet")], "inserted bottom has none")
-    check(any("_Front_RabbetEnd" in o.Label or "_Back_RabbetEnd" in o.Label for o in ops if o.Label.startswith("Captured_")),
-          "captured drawer (no front) rabbets its Front/Back")
-    check(any("_SideL_RabbetEnd" in o.Label for o in ops if o.Label.startswith("Drawer_")), "drawer with front rabbets its sides")
+    for prefix in ("Captured_", "Drawer_"):
+        for role, feature in (("SideL", "Dado"), ("SideR", "Dado"), ("Front", "Lap"), ("Back", "Lap")):
+            ends = sorted(set(o.Label.split("_")[-2] for o in ops
+                              if o.Label.startswith("{}{}_{}".format(prefix, role, feature))))
+            want = ["DadoBack", "DadoFront"] if feature == "Dado" else ["LapLeft", "LapRight"]
+            check(ends == want, "{}{} has both {} cuts: {}".format(prefix, role, feature, ends))
     check(abs(job.SetupSheet.ClearanceHeightOffset.Value - 22) < 1e-6, "clearance offset = clamp height + 2")
 
     # --- G-code ---------------------------------------------------------------------

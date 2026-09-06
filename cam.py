@@ -17,7 +17,7 @@ Workflow
    flat (pocketed face up, top face at Z = 0), the stock is the whole sheet with the
    chosen reference corner at the origin: top-left (X to the right, Y negative towards
    the operator) or bottom-left (Y positive). Panels hug the two edges at that corner.
-   Operations: Slot passes for the bottom groove, the half-lap rabbets and the bottom's
+   Operations: Slot passes for the bottom groove, the corner joinery and the bottom's
    perimeter rabbet; one Slot per merged cut line with a Tags dress-up. Finally each Job
    is post-processed to <docdir>/<Doc>_CAM_<t>mm_<n>.nc.
 4. Running the command again re-nests and replaces the Jobs of the selected drawers.
@@ -27,10 +27,12 @@ Geometry
 All pockets are computed in the *body-local* frame of each panel (each body is a slab
 centered on its own origin, see drawers.py) and mapped into job coordinates through the
 model clone's Placement, which is derived from the nest.
-The half-lap rabbets are not modelled in the drawer bodies; they are synthesised here:
-the full-length panels (Front/Back without a drawer front, SideL/SideR with one) get a
-rabbet t_side wide x t_side/2 deep on their inner face at both ends. No rabbets are cut
-when overlap_box is set.
+The corner joinery *is* modelled in the drawer bodies, but every dimension is re-derived
+here (DrawerParams, pocket_regions) rather than read back from the solids, so both must be
+kept in lock-step: the sides run the full depth and carry a t_side/2 wide, t_side/2 deep
+dado at each end, offset t_side/2 from the end edge; the front and back are t_side shorter
+than the width and get a matching t_side/2 x t_side/2 lap at each end. All of it sits on
+the inner face, and none of it is cut when overlap_box is set.
 
 Verified against the FreeCAD 1.1.3 CAM API.
 """
@@ -115,18 +117,16 @@ class DrawerParams:
         self.overlap_box = bool(holder.overlap_box)
         self.has_front = bool(holder.has_front)
 
-    # Same derivations as drawers.create_drawer().
+    # Same derivations as drawers.create_drawer(): the sides always run the full depth
+    # and carry the corner dados, the front and back are shortened by t_side and lap into
+    # them (unless overlap_box dimensions all four walls to fully overlap).
     @property
     def side_len(self):
-        if self.has_front:
-            return self.depth
-        return self.depth if self.overlap_box else self.depth - self.t_side
+        return self.depth
 
     @property
     def fb_len(self):
-        if self.has_front:
-            return self.width if self.overlap_box else self.width - self.t_side
-        return self.width
+        return self.width if self.overlap_box else self.width - self.t_side
 
     @property
     def bottom_x(self):
@@ -134,11 +134,7 @@ class DrawerParams:
 
     @property
     def bottom_y(self):
-        return self.depth - self.t_side
-
-    @property
-    def full_length_roles(self):
-        return ("SideL", "SideR") if self.has_front else ("Front", "Back")
+        return self.depth - (self.t_side if self.overlap_box else 2 * self.t_side)
 
     def thickness(self, role):
         if role == "Bottom":
@@ -259,10 +255,28 @@ def pocket_regions(role, p, frame):
     if role in WALL_ROLES:
         ts = p.t_side
         g0 = -W / 2.0 + p.groove_offset
-        regions.append(Region("Groove", -L / 2.0, L / 2.0, g0, g0 + p.groove_width, ts / 2.0, "u"))
-        if role in p.full_length_roles and not p.overlap_box:
-            regions.append(Region("RabbetEnd1", L / 2.0 - ts, L / 2.0, -W / 2.0, W / 2.0, ts / 2.0, "v"))
-            regions.append(Region("RabbetEnd2", -L / 2.0, -L / 2.0 + ts, -W / 2.0, W / 2.0, ts / 2.0, "v"))
+        g1 = g0 + p.groove_width
+        # The back's groove is open to the panel's lower edge (the bottom slides in from
+        # the back), the other three walls keep it closed.
+        regions.append(Region("Groove", -L / 2.0, L / 2.0,
+                              -W / 2.0 if role == "Back" else g0, g1, ts / 2.0, "u"))
+        if not p.overlap_box:
+            # SideR's and Back's panel-frame U points against the drawer axis, so the
+            # names follow the flipped end (they match the pocket names in drawers.py).
+            f = -1.0 if role in ("SideR", "Back") else 1.0
+            if role in ("SideL", "SideR"):
+                # Corner dados: ts/2 wide, offset ts/2 from each end.
+                ends = (("DadoFront", f), ("DadoBack", -f))
+                near, far = ts / 2.0, ts
+            else:
+                # Matching half-laps at the very ends of the front/back.
+                ends = (("LapRight", f), ("LapLeft", -f))
+                near, far = 0.0, ts / 2.0
+            for name, sign in ends:
+                regions.append(Region(
+                    name, sign * (L / 2.0 - near), sign * (L / 2.0 - far),
+                    -W / 2.0, W / 2.0, ts / 2.0, "v",
+                ))
     elif role == "Bottom" and not p.bottom_inserted:
         w = p.t_side / 2.0
         d = p.t_bottom / 2.0

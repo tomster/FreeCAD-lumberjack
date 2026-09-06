@@ -58,8 +58,9 @@ The drawer is placed inside the currently active container (if any).
 
 - **Box joints** (`overlap_box`): when checked, the box panels are dimensioned to fully
   overlap (box-joint style — the joints themselves are not modelled). When unchecked, the
-  sides are shortened by `t_side` for half-lap dado construction. This option stays live
-  and editable on the created drawer.
+  corners are cut as a tongue-and-dado joint (see **Joinery** below). This option stays
+  live and editable on the created drawer; toggling it re-dimensions the panels and
+  suppresses or re-enables the joinery pockets.
 - **Add a dedicated drawer front** (`has_front`): when checked, an extra front panel is
   added with its own parameters:
   - **Front width / Front height** (`width_front`, `height_front`): outer size of the front.
@@ -69,23 +70,31 @@ The drawer is placed inside the currently active container (if any).
 
 **Joinery:** The bottom is captured in a groove (width `0.5 * t_bottom`) cut into the inner
 faces of the side, front, and back panels ("captured-bottom drawer"), and the bottom panel
-carries a matching perimeter rabbet so its upper-half tongue seats into the grooves.
+carries a matching perimeter rabbet so its upper-half tongue seats into the grooves. The
+back's groove is open towards its lower edge, the front's and the sides' are closed: glue
+up the sides and the front, slide the bottom in from the back, then drop the back in.
+(Front and Back are therefore not identical parts.)
+
+The four corners interlock the same way. The sides run the full `depth` and carry a dado
+at each end — `0.5 * t_side` wide, `0.5 * t_side` deep, offset `0.5 * t_side` from the end
+edge, running the full panel height. The front and back are `t_side` shorter than the
+`width` and get a matching half-lap (`0.5 * t_side` long and deep) at each end, so the
+outer half of their thickness forms the tongue that slides into the side dados.
 
 **Coordinate system:** The bottom panel is centered on the Part origin in X (width) and Y
 (depth); its bottom face is at `z = 0` (at the default `bottom_v_offset` of 0). The whole
 drawer Part is rotated 180° about Z so its front faces the FreeCAD "front" (−Y) view.
 
-**Box joinery orientation:** When **Box joints** is off (half-lap dados) the joinery
-orientation depends on whether a drawer front is requested:
+**Recessed corners:** All joinery cuts sit on a panel's inner face, so every panel can be
+machined in a single setup. The price is that the front and back sit `0.5 * t_side` behind
+the ends of the sides — the sides form a small lip at the front and the back. With a
+dedicated drawer front that lip disappears behind it (the drawer front still lands on the
+ends of the sides, bridged by the screws through the box front); without one the recess is
+visible. The interior depth is `depth - 3 * t_side` and the bottom panel is
+`depth - 2 * t_side` long; the outer `width` and `depth` are unaffected.
 
-- *No drawer front:* the front/back panels run full width and the sides lap into them, so
-  the drawer shows a clean, uniform front face.
-- *With a drawer front:* the joinery is rotated 90° about Z — the sides run the full depth
-  and the front/back lap into them. This puts the corner glue joints in shear when the
-  drawer front is pulled, giving a stronger bond against the drawer being pulled out. The
-  less tidy front-edge grain this exposes is hidden behind the drawer front.
-
-When **Box joints** is on, all box panels are dimensioned to fully overlap regardless.
+The joinery does not depend on whether a drawer front is requested. When **Box joints** is
+on, all box panels are dimensioned to fully overlap and no corner joint is cut.
 
 **Parameters / data model:** Every parameter is stored as an editable, expression-capable
 property. Because FreeCAD raises a cyclic-reference error when a child body references its
@@ -170,9 +179,10 @@ File > Export or the TechDraw toolbar print it.
   there.
 - The models are the panel bodies laid flat, pocketed face up, at their nested places.
   The stock is the whole sheet.
-- **Slot passes** for the bottom groove of the walls, the half-lap end rabbets of the
-  full-length walls (not with `overlap_box`) and, for a captured bottom, its four rabbet
-  strips. Passes overlap by 50 % of the tool diameter and overshoot open ends.
+- **Slot passes** for the bottom groove of the walls, the corner joinery of the walls (the
+  end dados of the sides and the end laps of the front/back; not with `overlap_box`) and,
+  for a captured bottom, its four rabbet strips. Passes overlap by 50 % of the tool
+  diameter and overshoot open ends.
 - **One Slot per merged cut line** (through cut, 0.2 mm into the spoilboard) with a
   **Tags** dress-up: tabs at 1/3 and 2/3 of every panel edge on that line, 10 mm wide,
   3 mm high (at most half the thickness).
@@ -185,9 +195,10 @@ whole). Manual changes to those Jobs are lost. The container is kept when the se
 drawers is unchanged, so you may rename it; when the set changes a fresh container with a
 generated name replaces the old ones.
 
-Half-lap joinery is not modelled in the drawer bodies; the CAM code synthesises it:
-the full-length panels (Front/Back, or SideL/SideR when a drawer front exists) get a
-rabbet `t_side` wide x `t_side / 2` deep on their inner face at both ends.
+The corner joinery is modelled in the drawer bodies and mirrored here, so the pockets on
+the sheet match the solids. Note that the dados and laps are only `t_side / 2` wide, so
+the bit must be at most `t_side / 2` (6 mm for 12 mm stock); a wider bit is reported as a
+`Dado`/`Lap` problem before the run starts.
 
 ### Sync Aliases Command
 

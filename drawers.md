@@ -40,10 +40,20 @@ the groove depth (into the wall) is `0.5 * t_side`. which joint is used depends 
 
 optionally the vertical distance can be increased using a parameter `bottom_v_offset`
 
+the **back**'s groove is open towards its lower edge (it runs from the bottom of the panel up to the top of the groove); the front's and the sides' grooves are closed. this fixes the assembly order: glue up the sides and the front, slide the bottom in from the back, then drop the back in. front and back are therefore not identical parts.
+
 ### box
 
-the box can either be constructed using half lap dados (using half of the thickness `t_side`)
-optionally, the user can indicate that it should be built using box joints. in this case we don't compute the joints themselve but simply dimension the panels of the box so that they all fully overlap.
+the four corners of the box interlock like the bottom does, with a tongue-and-dado joint:
+
+- the **sides** run the full `depth` and carry a **dado at each end**, `0.5 * t_side` wide and `0.5 * t_side` deep, cut into their inner face and offset `0.5 * t_side` from the end edge. the dado runs the full height of the panel.
+- the **front and back** are `t_side` shorter than the `width` and get a matching **half-lap** at each end, `0.5 * t_side` long and `0.5 * t_side` deep, again on the inner face and over the full height. what remains — the outer half of their thickness — is the tongue that slides into the side dados.
+
+this is the *recessed* variant of the joint: every cut sits on a panel's inner face, so each panel can be machined in a single setup. as a consequence the front and back sit `0.5 * t_side` behind the ends of the sides, i.e. the sides form a small lip at the front and the back. with a dedicated drawer front that lip is hidden behind it (the drawer front still lands on the ends of the sides); without one the recess is visible.
+
+because the sides run the full depth, the interior depth is `depth - 3 * t_side` and the bottom panel is `depth - 2 * t_side` long.
+
+optionally, the user can indicate that the box should be built using box joints (`overlap_box`). in that case we don't compute the joints themselves but simply dimension the panels of the box so that they all fully overlap; the dado and lap pockets are suppressed. the option stays live-editable on the created drawer.
 
 ## datamodel
 

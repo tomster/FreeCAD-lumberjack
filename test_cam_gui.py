@@ -84,9 +84,10 @@ def main():
         check(op.ViewObject.Proxy is not None, "{} has a view provider".format(op.Label))
     check(len(job.Model.Group) == 4, "4 clones on the 12 mm sheet (walls)")
     check(res.cut_slots > 0 and res.pocket_slots > 0, "ops created")
-    rabbets = [o for o in job.Proxy.allOperations() if "RabbetEnd" in o.Label]
-    check(rabbets and all("_Front_" in o.Label or "_Back_" in o.Label for o in rabbets),
-          "without drawer front the Front/Back panels get the end rabbets")
+    joints = [o for o in job.Proxy.allOperations() if "_Dado" in o.Label or "_Lap" in o.Label]
+    check(joints and all(("_Dado" in o.Label) == ("_SideL_" in o.Label or "_SideR_" in o.Label)
+                         for o in joints),
+          "sides get the corner dados, front/back the matching laps")
     check(res.gcode_files and os.path.exists(res.gcode_files[0]), "gcode written")
     check(job.Tools.Group[0].ViewObject.Proxy is not None, "tool controller has a view provider")
     check(abs(job.Stock.Shape.BoundBox.XMax - s.sheet_w) < 1e-6, "stock is the sheet")

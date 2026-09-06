@@ -55,7 +55,13 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   clone's Placement. Keep it that way.
 - Everything parametric goes through the `<Part>_Params` holder with expressions
   (ternaries for live switches such as `overlap_box` and `t_bottom < t_side`). The
-  bottom rabbet is switched off via an expression on the pocket's `Suppressed` property.
+  bottom rabbet and the corner dado/lap pockets are switched off via an expression on the
+  pocket's `Suppressed` property.
+- Corner joinery (sides run the full depth and carry a `t_side/2` dado at each end, the
+  front/back are `t_side` shorter and lap into them, all cuts on the inner face) is
+  modelled in the bodies *and* re-derived in `cam.py` (`DrawerParams`, `pocket_regions`).
+  The two must be changed in lock-step; `test_cam.check_panels` pins them together
+  (panel bbox vs. `panel_frame`, plus a pairwise no-interpenetration check).
 - Drawer detection is by structure (holder with `width`, `t_side`, `t_bottom`,
   `overlap_box`; bodies named `<Part>_<Role>`), see `drawers.drawer_holder` /
   `find_drawer_part`. Jobs carry `LumberjackDrawers`, `LumberjackThickness`,

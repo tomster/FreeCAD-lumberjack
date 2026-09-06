@@ -36,6 +36,18 @@ Bottom joint (decided live by the expression t_bottom < t_side):
     bottom's rabbet pocket is suppressed.
   - captured (t_bottom >= t_side): groove t_bottom / 2 wide starting t_bottom / 2 above
     the box bottom, the bottom is rabbeted to a t_bottom / 2 tongue.
+  The back's groove is open to its lower edge so the bottom can be slid in from the back
+  once the sides and the front are glued; the front and the sides keep a closed groove.
+
+Corner joinery (suppressed live when overlap_box is set, in which case all four walls are
+dimensioned to fully overlap and no joint is cut):
+  - the sides run the full depth and carry a dado at each end, t_side / 2 wide and
+    t_side / 2 deep on their inner face, offset t_side / 2 from the end edge;
+  - the front and back are t_side shorter than the width and get a matching half-lap
+    (t_side / 2 x t_side / 2) at each end, again on the inner face, so their outer half
+    forms the tongue that slides into the side dados.
+  Keeping every cut on the inner face lets CAM machine each panel in a single setup; the
+  price is that the front and back sit t_side / 2 behind the ends of the sides.
 
 The whole drawer Part is rotated 180 deg about Z so its front (the optional drawer front
 and the front wall) faces the FreeCAD "front" (-Y) view direction.
@@ -301,7 +313,7 @@ def create_parameter_holder(doc, part, name, label, values):
         "App::PropertyBool",
         "overlap_box",
         "Drawer",
-        "Box joints (panels fully overlap) instead of half-lap dados",
+        "Box joints (panels fully overlap) instead of tongue-and-dado corners",
     )
     holder.addProperty(
         "App::PropertyBool",
@@ -447,14 +459,19 @@ def _build_slab(doc, body, role, a_expr, b_expr, t_expr):
     return pad
 
 
-def _cut_groove(doc, body, role, u0_expr, du_expr, v0_expr, dv_expr):
+def _cut_pocket(
+    doc, body, role, u0_expr, du_expr, v0_expr, dv_expr,
+    name="Groove", suppress_expr=None,
+):
     """
-    Cut a ThroughAll groove pocket into a wall body.
+    Cut a ThroughAll rectangular pocket into a panel body.
 
-    The pocket sketch is placed on the same datum plane the wall was padded from, so the
-    pocket runs the full length of the wall. (u, v) are the in-plane sketch axes.
+    The pocket sketch is placed on one of the body's origin datum planes (role), so the
+    pocket runs the full extent of the body along that plane's normal. (u, v) are the
+    in-plane sketch axes; name is used for the sketch/pocket object names. If
+    suppress_expr is given it drives the pocket's Suppressed property (1 = no cut).
     """
-    sketch = doc.addObject("Sketcher::SketchObject", "{}_GrooveSk".format(body.Name))
+    sketch = doc.addObject("Sketcher::SketchObject", "{}_{}Sk".format(body.Name, name))
     body.addObject(sketch)
     plane = _datum_plane(body, role)
     if plane is not None:
@@ -467,11 +484,13 @@ def _cut_groove(doc, body, role, u0_expr, du_expr, v0_expr, dv_expr):
     sketch.setExpression("Constraints[{}]".format(dv_idx), dv_expr)
     doc.recompute()
 
-    pocket = doc.addObject("PartDesign::Pocket", "{}_Groove".format(body.Name))
+    pocket = doc.addObject("PartDesign::Pocket", "{}_{}".format(body.Name, name))
     pocket.Profile = sketch
     body.addObject(pocket)
     pocket.Type = "ThroughAll"
     pocket.SideType = "Symmetric"
+    if suppress_expr:
+        pocket.setExpression("Suppressed", suppress_expr)
     sketch.Visibility = False
     doc.recompute()
     return pocket
@@ -545,34 +564,32 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     has_front = bool(values.get("has_front", False))
 
     # --- Derived dimension expressions ---------------------------------------
-    # Box corner joinery orientation:
-    #   - Without a dedicated front, keep the front/back panels full-width so the drawer
-    #     shows a clean, uniform front face; the sides lap into the front/back.
-    #   - With a dedicated front, rotate the joinery 90 deg about Z: the sides run the
-    #     full depth and the front/back lap into them. This puts the corner glue joints
-    #     in shear when the drawer front is pulled, giving a stronger bond against the
-    #     drawer being pulled out. The less tidy front-edge grain is hidden behind the
-    #     drawer front.
-    # overlap_box stays live-editable via the ternary: when set, all panels fully overlap
-    # (box-joint dimensioning); otherwise a half-lap (t_side inset) is applied.
-    if has_front:
-        side_len = H("depth")
-        fb_len = "{ov} == 1 ? {w} : {w} - {ts}".format(
-            ov=H("overlap_box"), w=H("width"), ts=H("t_side")
-        )
-    else:
-        side_len = "{ov} == 1 ? {d} : {d} - {ts}".format(
-            ov=H("overlap_box"), d=H("depth"), ts=H("t_side")
-        )
-        fb_len = H("width")
+    # Box corner joinery (independent of has_front): the sides always run the full depth
+    # and carry a t_side/2 wide, t_side/2 deep dado at each end, offset t_side/2 from the
+    # end edge; the front and back are shortened by t_side and get a matching half-lap
+    # (rabbet) at each end, so their outer half slides into the side dados. The cuts stay
+    # on the panels' inner faces (recessed variant), which keeps CAM in one setup; as a
+    # consequence the front and back sit t_side/2 behind the side ends.
+    # overlap_box stays live-editable via the ternaries: when set, all panels fully
+    # overlap (box-joint dimensioning) and the dado/lap pockets are suppressed.
+    ov = H("overlap_box")
+    overlapping = "{ov} == 1".format(ov=ov)
+    joint_suppress = "{ov} == 1 ? 1 : 0".format(ov=ov)
+    side_len = H("depth")
+    fb_len = "{o} ? {w} : {w} - {ts}".format(o=overlapping, w=H("width"), ts=H("t_side"))
     height = H("height")
     t_side = H("t_side")
     t_bottom = H("t_bottom")
     bottom_x = "{w} - {ts}".format(w=H("width"), ts=H("t_side"))
-    bottom_y = "{d} - {ts}".format(d=H("depth"), ts=H("t_side"))
+    bottom_y = "{d} - ({o} ? {ts} : 2 * {ts})".format(
+        o=overlapping, d=H("depth"), ts=H("t_side")
+    )
     cavity_x = "{w} - 2 * {ts}".format(w=H("width"), ts=H("t_side"))
-    cavity_y = "{d} - 2 * {ts}".format(d=H("depth"), ts=H("t_side"))
+    cavity_y = "{d} - ({o} ? 2 * {ts} : 3 * {ts})".format(
+        o=overlapping, d=H("depth"), ts=H("t_side")
+    )
     groove_depth = "{ts} / 2".format(ts=H("t_side"))
+    half_ts = "{ts} / 2".format(ts=H("t_side"))
     # Bottom joint, live-editable via the ternaries:
     #   - t_bottom < t_side ("inserted" bottom): the bottom keeps its full thickness and
     #     sits in a groove t_bottom wide that starts t_bottom above the box bottom. No
@@ -587,45 +604,86 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
         ins=inserted, tb=H("t_bottom"), off=H("bottom_v_offset"), h=H("height")
     )
 
+    # The back's bottom groove opens to its lower edge so the bottom can be slid in from
+    # the back after the sides and the front have been glued up; the front and the sides
+    # keep the closed groove.
+    open_groove_v0 = "-{h} / 2".format(h=H("height"))
+    open_groove_dv = "2 * ({gd}) + {off}".format(gd=groove_dv, off=H("bottom_v_offset"))
+
     half_w = "{w} / 2 - {ts} / 2".format(w=H("width"), ts=H("t_side"))
-    half_d = "{d} / 2 - {ts} / 2".format(d=H("depth"), ts=H("t_side"))
+    half_d = "{d} / 2 - ({o} ? {ts} / 2 : {ts})".format(
+        o=overlapping, d=H("depth"), ts=H("t_side")
+    )
+    # Corner dados in the sides (v = depth): t_side/2 wide, offset t_side/2 from the end.
+    dado_front_v0 = "{d} / 2 - {ts}".format(d=H("depth"), ts=H("t_side"))
+    dado_back_v0 = "-{d} / 2 + {ts} / 2".format(d=H("depth"), ts=H("t_side"))
+    # Matching laps at the ends of the front/back (u = length): t_side/2 long.
+    lap_left_u0 = "-({fb}) / 2".format(fb=fb_len)
+    lap_right_u0 = "({fb}) / 2 - {ts} / 2".format(fb=fb_len, ts=H("t_side"))
 
     # --- Left side wall (inner face +X) --------------------------------------
     side_l = _create_body(doc, part, "{}_SideL".format(base), "{}_SideL".format(lbl))
     _build_slab(doc, side_l, "XZ_Plane", t_side, height, side_len)
-    _cut_groove(
+    _cut_pocket(
         doc, side_l, "XZ_Plane",
         u0_expr="0", du_expr=groove_depth, v0_expr=groove_v0, dv_expr=groove_dv,
     )
+    for pocket_name, v0 in (("DadoFront", dado_front_v0), ("DadoBack", dado_back_v0)):
+        _cut_pocket(
+            doc, side_l, "XY_Plane",
+            u0_expr="0", du_expr=half_ts, v0_expr=v0, dv_expr=half_ts,
+            name=pocket_name, suppress_expr=joint_suppress,
+        )
     _set_placement(side_l, x_expr="-({})".format(half_w), z_expr="{} / 2".format(height))
 
     # --- Right side wall (inner face -X) -------------------------------------
     side_r = _create_body(doc, part, "{}_SideR".format(base), "{}_SideR".format(lbl))
     _build_slab(doc, side_r, "XZ_Plane", t_side, height, side_len)
-    _cut_groove(
+    _cut_pocket(
         doc, side_r, "XZ_Plane",
         u0_expr="-({})".format(groove_depth), du_expr=groove_depth,
         v0_expr=groove_v0, dv_expr=groove_dv,
     )
+    for pocket_name, v0 in (("DadoFront", dado_front_v0), ("DadoBack", dado_back_v0)):
+        _cut_pocket(
+            doc, side_r, "XY_Plane",
+            u0_expr="-({})".format(half_ts), du_expr=half_ts,
+            v0_expr=v0, dv_expr=half_ts,
+            name=pocket_name, suppress_expr=joint_suppress,
+        )
     _set_placement(side_r, x_expr=half_w, z_expr="{} / 2".format(height))
 
     # --- Back wall (inner face +Y) -------------------------------------------
     back = _create_body(doc, part, "{}_Back".format(base), "{}_Back".format(lbl))
     _build_slab(doc, back, "YZ_Plane", t_side, height, fb_len)
-    _cut_groove(
+    _cut_pocket(
         doc, back, "YZ_Plane",
-        u0_expr="0", du_expr=groove_depth, v0_expr=groove_v0, dv_expr=groove_dv,
+        u0_expr="0", du_expr=groove_depth,
+        v0_expr=open_groove_v0, dv_expr=open_groove_dv,
     )
+    for pocket_name, u0 in (("LapLeft", lap_left_u0), ("LapRight", lap_right_u0)):
+        _cut_pocket(
+            doc, back, "XY_Plane",
+            u0_expr=u0, du_expr=half_ts, v0_expr="0", dv_expr=half_ts,
+            name=pocket_name, suppress_expr=joint_suppress,
+        )
     _set_placement(back, y_expr="-({})".format(half_d), z_expr="{} / 2".format(height))
 
     # --- Front wall (inner face -Y) ------------------------------------------
     front = _create_body(doc, part, "{}_Front".format(base), "{}_Front".format(lbl))
     _build_slab(doc, front, "YZ_Plane", t_side, height, fb_len)
-    _cut_groove(
+    _cut_pocket(
         doc, front, "YZ_Plane",
         u0_expr="-({})".format(groove_depth), du_expr=groove_depth,
         v0_expr=groove_v0, dv_expr=groove_dv,
     )
+    for pocket_name, u0 in (("LapLeft", lap_left_u0), ("LapRight", lap_right_u0)):
+        _cut_pocket(
+            doc, front, "XY_Plane",
+            u0_expr=u0, du_expr=half_ts,
+            v0_expr="-({})".format(half_ts), dv_expr=half_ts,
+            name=pocket_name, suppress_expr=joint_suppress,
+        )
     _set_placement(front, y_expr=half_d, z_expr="{} / 2".format(height))
 
     # --- Bottom panel (rabbeted, sits in the wall grooves) -------------------
@@ -961,7 +1019,7 @@ class CreateDrawerDialog(QtWidgets.QDialog):
 
             # overlap_box checkbox
             self.overlap_check = QtWidgets.QCheckBox(
-                "Box joints (overlapping panels) instead of half-lap dados"
+                "Box joints (overlapping panels) instead of tongue-and-dado corners"
             )
             if self.existing_values is not None:
                 self.overlap_check.setChecked(self.existing_values["overlap_box"])
@@ -1134,7 +1192,14 @@ def _validate_values(values):
             (ts > 0, "side thickness must be > 0"),
             (tb > 0, "bottom thickness must be > 0"),
             (w > 2 * ts, "width must be greater than 2 x side thickness"),
-            (d > 2 * ts, "depth must be greater than 2 x side thickness"),
+            # Without overlap_box the front and back are recessed by t_side / 2 each, so
+            # the cavity needs a third side thickness of depth.
+            (
+                d > (2 * ts if values.get("overlap_box") else 3 * ts),
+                "depth must be greater than {} x side thickness".format(
+                    2 if values.get("overlap_box") else 3
+                ),
+            ),
             (h > groove_top, "height must be greater than the top of the bottom groove"),
         ]
         for ok, msg in checks:
