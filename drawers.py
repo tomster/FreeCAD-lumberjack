@@ -39,15 +39,22 @@ Bottom joint (decided live by the expression t_bottom < t_side):
   The back's groove is open to its lower edge so the bottom can be slid in from the back
   once the sides and the front are glued; the front and the sides keep a closed groove.
 
-Corner joinery (suppressed live when overlap_box is set, in which case all four walls are
-dimensioned to fully overlap and no joint is cut):
-  - the sides run the full depth and carry a dado at each end, t_side / 2 wide and
-    t_side / 2 deep on their inner face, offset t_side / 2 from the end edge;
-  - the front and back are t_side shorter than the width and get a matching half-lap
-    (t_side / 2 x t_side / 2) at each end, again on the inner face, so their outer half
-    forms the tongue that slides into the side dados.
-  Keeping every cut on the inner face lets CAM machine each panel in a single setup; the
-  price is that the front and back sit t_side / 2 behind the ends of the sides.
+Corner joinery (corner_joint enumeration, decided live by expressions on its index). The
+orientation is the same for all variants: the sides run the full depth, the front and back
+tuck into them.
+  - "Tongue and dado" (0): the sides carry a dado at each end, t_side / 2 wide and
+    t_side / 2 deep on their inner face, offset t_side / 2 from the end edge; the front and
+    back are t_side shorter than the width and get a matching half-lap (t_side / 2 x
+    t_side / 2) at each end, again on the inner face, so their outer half forms the tongue
+    that slides into the side dados. Keeping every cut on the inner face lets CAM machine
+    each panel in a single setup; the price is that the front and back sit t_side / 2
+    behind the ends of the sides.
+  - "Half-lap" (1): the side pocket widens to t_side and runs out to the end edge (a
+    rabbet); the front and back (still t_side shorter) sit in it flush with the side ends,
+    without any cut of their own.
+  - "Overlap" (2): all four walls are dimensioned to fully overlap (box-joint stock), no
+    joint is cut.
+  Legacy drawers carry an overlap_box boolean instead; corner_joint_of() maps it.
 
 The whole drawer Part is rotated 180 deg about Z so its front (the optional drawer front
 and the front wall) faces the FreeCAD "front" (-Y) view direction.
@@ -122,6 +129,26 @@ _KEY_TO_PROP = {
     "drawer_front_v_offset": "front_v_offset",
 }
 
+# Corner joinery variants; the holder's corner_joint enumeration uses these indices.
+CORNER_JOINTS = ("Tongue and dado", "Half-lap", "Overlap")
+JOINT_TONGUE_DADO, JOINT_HALF_LAP, JOINT_OVERLAP = 0, 1, 2
+
+
+def joint_index(value):
+    """Normalise a corner joint given as index, name or legacy overlap bool to its index."""
+    if isinstance(value, str):
+        return CORNER_JOINTS.index(value)
+    if isinstance(value, bool):
+        return JOINT_OVERLAP if value else JOINT_TONGUE_DADO
+    return int(value)
+
+
+def corner_joint_of(holder):
+    """The holder's corner joint index; legacy holders only have the overlap_box bool."""
+    if "corner_joint" in holder.PropertiesList:
+        return joint_index(str(holder.corner_joint))
+    return joint_index(bool(holder.overlap_box))
+
 
 # =============================================================================
 # DRAWER DISCOVERY
@@ -134,7 +161,9 @@ def _is_holder(obj):
     if hasattr(obj, "Shape"):
         return False
     props = getattr(obj, "PropertiesList", [])
-    return all(p in props for p in ("width", "t_side", "t_bottom", "overlap_box"))
+    return all(p in props for p in ("width", "t_side", "t_bottom")) and (
+        "corner_joint" in props or "overlap_box" in props
+    )
 
 
 def drawer_holder(part):
@@ -262,7 +291,7 @@ def read_drawer_values(holder):
             values[prop] = _strip_outer_parens(expr)
         else:
             values[prop] = "{} mm".format(getattr(holder, prop).Value)
-    values["overlap_box"] = bool(holder.overlap_box)
+    values["corner_joint"] = corner_joint_of(holder)
     values["has_front"] = bool(holder.has_front)
     return values
 
@@ -296,7 +325,8 @@ def create_parameter_holder(doc, part, name, label, values):
         part: the drawer App::Part the holder is placed in
         name: base name of the drawer (used to build the holder name)
         values: dict mapping holder property names to expression strings (length props)
-                plus "overlap_box" and "has_front" booleans.
+                plus "corner_joint" (index or name, see CORNER_JOINTS) and the "has_front"
+                boolean.
 
     Returns:
         The holder object.
@@ -310,11 +340,14 @@ def create_parameter_holder(doc, part, name, label, values):
             "App::PropertyLength", prop, "Drawer", "Drawer parameter '{}'".format(prop)
         )
     holder.addProperty(
-        "App::PropertyBool",
-        "overlap_box",
+        "App::PropertyEnumeration",
+        "corner_joint",
         "Drawer",
-        "Box joints (panels fully overlap) instead of tongue-and-dado corners",
+        "Corner joinery: tongue and dado (sides dadoed, front/back lapped, recessed by "
+        "t_side/2), half-lap (sides rabbeted, front/back flush) or overlap (box-joint "
+        "stock, no joint cut). The sides always run the full depth.",
     )
+    holder.corner_joint = list(CORNER_JOINTS)
     holder.addProperty(
         "App::PropertyBool",
         "has_front",
@@ -322,8 +355,8 @@ def create_parameter_holder(doc, part, name, label, values):
         "Whether the drawer has a dedicated front panel",
     )
 
-    # Booleans first (referenced by ternary expressions).
-    holder.overlap_box = bool(values.get("overlap_box", False))
+    # Switches first (referenced by ternary expressions).
+    holder.corner_joint = joint_index(values.get("corner_joint", JOINT_TONGUE_DADO))
     holder.has_front = bool(values.get("has_front", False))
 
     # Apply the length expressions.
@@ -517,8 +550,8 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
 
     Args:
         name: label for the drawer Part (and base for the body labels).
-        values: dict of expression strings for the length parameters plus the
-                "overlap_box" and "has_front" booleans (see create_parameter_holder).
+        values: dict of expression strings for the length parameters plus
+                "corner_joint" and the "has_front" boolean (see create_parameter_holder).
         container: App::Part to add the drawer to; default is the active container.
         placement: Placement for the drawer Part; default is the 180 deg Z rotation.
         internal_name: internal object name to request (used when recreating a drawer
@@ -564,29 +597,32 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     has_front = bool(values.get("has_front", False))
 
     # --- Derived dimension expressions ---------------------------------------
-    # Box corner joinery (independent of has_front): the sides always run the full depth
-    # and carry a t_side/2 wide, t_side/2 deep dado at each end, offset t_side/2 from the
-    # end edge; the front and back are shortened by t_side and get a matching half-lap
-    # (rabbet) at each end, so their outer half slides into the side dados. The cuts stay
-    # on the panels' inner faces (recessed variant), which keeps CAM in one setup; as a
-    # consequence the front and back sit t_side/2 behind the side ends.
-    # overlap_box stays live-editable via the ternaries: when set, all panels fully
-    # overlap (box-joint dimensioning) and the dado/lap pockets are suppressed.
-    ov = H("overlap_box")
-    overlapping = "{ov} == 1".format(ov=ov)
-    joint_suppress = "{ov} == 1 ? 1 : 0".format(ov=ov)
+    # Box corner joinery, live-editable through the corner_joint enumeration (its index
+    # is what the expressions see). The sides always run the full depth and carry the
+    # corner pocket on their inner face at each end; the front and back tuck into them:
+    #   tongue and dado (0): pocket t_side/2 wide, offset t_side/2 from the end; front/back
+    #       shortened by t_side, lapped at the ends, recessed t_side/2 behind the side ends
+    #   half-lap (1): pocket t_side wide, out to the end edge; front/back shortened by
+    #       t_side, no cut, flush with the side ends
+    #   overlap (2): no pockets, all four walls dimensioned to fully overlap
+    # Every cut stays on the inner face, so CAM machines each panel in one setup.
+    cj = H("corner_joint")
+    tongue_dado = "{cj} == {i}".format(cj=cj, i=JOINT_TONGUE_DADO)
+    overlapping = "{cj} == {i}".format(cj=cj, i=JOINT_OVERLAP)
+    corner_suppress = "{o} ? 1 : 0".format(o=overlapping)
+    lap_suppress = "{td} ? 0 : 1".format(td=tongue_dado)
     side_len = H("depth")
     fb_len = "{o} ? {w} : {w} - {ts}".format(o=overlapping, w=H("width"), ts=H("t_side"))
     height = H("height")
     t_side = H("t_side")
     t_bottom = H("t_bottom")
     bottom_x = "{w} - {ts}".format(w=H("width"), ts=H("t_side"))
-    bottom_y = "{d} - ({o} ? {ts} : 2 * {ts})".format(
-        o=overlapping, d=H("depth"), ts=H("t_side")
+    bottom_y = "{d} - ({td} ? 2 * {ts} : {ts})".format(
+        td=tongue_dado, d=H("depth"), ts=H("t_side")
     )
     cavity_x = "{w} - 2 * {ts}".format(w=H("width"), ts=H("t_side"))
-    cavity_y = "{d} - ({o} ? 2 * {ts} : 3 * {ts})".format(
-        o=overlapping, d=H("depth"), ts=H("t_side")
+    cavity_y = "{d} - ({td} ? 3 * {ts} : 2 * {ts})".format(
+        td=tongue_dado, d=H("depth"), ts=H("t_side")
     )
     groove_depth = "{ts} / 2".format(ts=H("t_side"))
     half_ts = "{ts} / 2".format(ts=H("t_side"))
@@ -611,12 +647,14 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     open_groove_dv = "2 * ({gd}) + {off}".format(gd=groove_dv, off=H("bottom_v_offset"))
 
     half_w = "{w} / 2 - {ts} / 2".format(w=H("width"), ts=H("t_side"))
-    half_d = "{d} / 2 - ({o} ? {ts} / 2 : {ts})".format(
-        o=overlapping, d=H("depth"), ts=H("t_side")
+    half_d = "{d} / 2 - ({td} ? {ts} : {ts} / 2)".format(
+        td=tongue_dado, d=H("depth"), ts=H("t_side")
     )
-    # Corner dados in the sides (v = depth): t_side/2 wide, offset t_side/2 from the end.
-    dado_front_v0 = "{d} / 2 - {ts}".format(d=H("depth"), ts=H("t_side"))
-    dado_back_v0 = "-{d} / 2 + {ts} / 2".format(d=H("depth"), ts=H("t_side"))
+    # Corner pockets in the sides (v = depth): start t_side from the end and run t_side/2
+    # (dado) or all the way to the end edge (half-lap rabbet).
+    corner_dv = "{td} ? {ts} / 2 : {ts}".format(td=tongue_dado, ts=H("t_side"))
+    corner_front_v0 = "{d} / 2 - {ts}".format(d=H("depth"), ts=H("t_side"))
+    corner_back_v0 = "-{d} / 2 + {ts} - ({dv})".format(d=H("depth"), ts=H("t_side"), dv=corner_dv)
     # Matching laps at the ends of the front/back (u = length): t_side/2 long.
     lap_left_u0 = "-({fb}) / 2".format(fb=fb_len)
     lap_right_u0 = "({fb}) / 2 - {ts} / 2".format(fb=fb_len, ts=H("t_side"))
@@ -628,11 +666,11 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
         doc, side_l, "XZ_Plane",
         u0_expr="0", du_expr=groove_depth, v0_expr=groove_v0, dv_expr=groove_dv,
     )
-    for pocket_name, v0 in (("DadoFront", dado_front_v0), ("DadoBack", dado_back_v0)):
+    for pocket_name, v0 in (("CornerFront", corner_front_v0), ("CornerBack", corner_back_v0)):
         _cut_pocket(
             doc, side_l, "XY_Plane",
-            u0_expr="0", du_expr=half_ts, v0_expr=v0, dv_expr=half_ts,
-            name=pocket_name, suppress_expr=joint_suppress,
+            u0_expr="0", du_expr=half_ts, v0_expr=v0, dv_expr=corner_dv,
+            name=pocket_name, suppress_expr=corner_suppress,
         )
     _set_placement(side_l, x_expr="-({})".format(half_w), z_expr="{} / 2".format(height))
 
@@ -644,12 +682,12 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
         u0_expr="-({})".format(groove_depth), du_expr=groove_depth,
         v0_expr=groove_v0, dv_expr=groove_dv,
     )
-    for pocket_name, v0 in (("DadoFront", dado_front_v0), ("DadoBack", dado_back_v0)):
+    for pocket_name, v0 in (("CornerFront", corner_front_v0), ("CornerBack", corner_back_v0)):
         _cut_pocket(
             doc, side_r, "XY_Plane",
             u0_expr="-({})".format(half_ts), du_expr=half_ts,
-            v0_expr=v0, dv_expr=half_ts,
-            name=pocket_name, suppress_expr=joint_suppress,
+            v0_expr=v0, dv_expr=corner_dv,
+            name=pocket_name, suppress_expr=corner_suppress,
         )
     _set_placement(side_r, x_expr=half_w, z_expr="{} / 2".format(height))
 
@@ -665,7 +703,7 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
         _cut_pocket(
             doc, back, "XY_Plane",
             u0_expr=u0, du_expr=half_ts, v0_expr="0", dv_expr=half_ts,
-            name=pocket_name, suppress_expr=joint_suppress,
+            name=pocket_name, suppress_expr=lap_suppress,
         )
     _set_placement(back, y_expr="-({})".format(half_d), z_expr="{} / 2".format(height))
 
@@ -682,7 +720,7 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
             doc, front, "XY_Plane",
             u0_expr=u0, du_expr=half_ts,
             v0_expr="-({})".format(half_ts), dv_expr=half_ts,
-            name=pocket_name, suppress_expr=joint_suppress,
+            name=pocket_name, suppress_expr=lap_suppress,
         )
     _set_placement(front, y_expr=half_d, z_expr="{} / 2".format(height))
 
@@ -1017,15 +1055,21 @@ class CreateDrawerDialog(QtWidgets.QDialog):
                 self._add_field_row(box_layout, label_text, _KEY_TO_PROP[key])
             layout.addWidget(box_group)
 
-            # overlap_box checkbox
-            self.overlap_check = QtWidgets.QCheckBox(
-                "Box joints (overlapping panels) instead of tongue-and-dado corners"
-            )
+            # corner_joint combo
+            joint_row = QtWidgets.QHBoxLayout()
+            joint_row.addWidget(QtWidgets.QLabel("Corner joinery"))
+            self.joint_combo = QtWidgets.QComboBox()
+            self.joint_combo.addItems(list(CORNER_JOINTS))
             if self.existing_values is not None:
-                self.overlap_check.setChecked(self.existing_values["overlap_box"])
+                joint = self.existing_values["corner_joint"]
             else:
-                self.overlap_check.setChecked(_get_last_bool("drawer_overlap_box", False))
-            layout.addWidget(self.overlap_check)
+                joint = _get_last_str("drawer_corner_joint", "")
+                if joint not in CORNER_JOINTS:
+                    # Fall back to the pre-enumeration preference.
+                    joint = _get_last_bool("drawer_overlap_box", False)
+            self.joint_combo.setCurrentIndex(joint_index(joint))
+            joint_row.addWidget(self.joint_combo, 1)
+            layout.addLayout(joint_row)
 
             # has_front checkbox
             self.front_check = QtWidgets.QCheckBox("Add a dedicated drawer front")
@@ -1086,7 +1130,7 @@ class CreateDrawerDialog(QtWidgets.QDialog):
                 except Exception:
                     expr = _default
             values[prop] = expr
-        values["overlap_box"] = self.overlap_check.isChecked()
+        values["corner_joint"] = self.joint_combo.currentIndex()
         values["has_front"] = self.front_check.isChecked()
         values["name"] = self.name_edit.text().strip()
         return values
@@ -1152,7 +1196,7 @@ def show_create_drawer_dialog():
     _set_last_str("drawer_name", name)
     for key, _label, _default in BOX_FIELDS + FRONT_FIELDS:
         _set_last_str(key, values[_KEY_TO_PROP[key]])
-    _set_last_bool("drawer_overlap_box", values["overlap_box"])
+    _set_last_str("drawer_corner_joint", CORNER_JOINTS[joint_index(values["corner_joint"])])
     _set_last_bool("drawer_has_front", values["has_front"])
 
     return create_drawer(name, values)
@@ -1188,17 +1232,17 @@ def _validate_values(values):
         off = probe.bottom_v_offset.Value
         # Inserted bottom (tb < ts): groove top is at offset + 2 * tb; captured: offset + tb.
         groove_top = off + (2 * tb if tb < ts else tb)
+        tongue_dado = joint_index(values.get("corner_joint", JOINT_TONGUE_DADO)) == JOINT_TONGUE_DADO
+        depth_factor = 3 if tongue_dado else 2
         checks = [
             (ts > 0, "side thickness must be > 0"),
             (tb > 0, "bottom thickness must be > 0"),
             (w > 2 * ts, "width must be greater than 2 x side thickness"),
-            # Without overlap_box the front and back are recessed by t_side / 2 each, so
-            # the cavity needs a third side thickness of depth.
+            # Tongue and dado recesses the front and back by t_side / 2 each, so the
+            # cavity needs a third side thickness of depth.
             (
-                d > (2 * ts if values.get("overlap_box") else 3 * ts),
-                "depth must be greater than {} x side thickness".format(
-                    2 if values.get("overlap_box") else 3
-                ),
+                d > depth_factor * ts,
+                "depth must be greater than {} x side thickness".format(depth_factor),
             ),
             (h > groove_top, "height must be greater than the top of the bottom groove"),
         ]

@@ -56,11 +56,11 @@ The drawer is placed inside the currently active container (if any).
 
 **Options:**
 
-- **Box joints** (`overlap_box`): when checked, the box panels are dimensioned to fully
-  overlap (box-joint style — the joints themselves are not modelled). When unchecked, the
-  corners are cut as a tongue-and-dado joint (see **Joinery** below). This option stays
-  live and editable on the created drawer; toggling it re-dimensions the panels and
-  suppresses or re-enables the joinery pockets.
+- **Corner joinery** (`corner_joint`): *Tongue and dado* (default), *Half-lap* or
+  *Overlap* — see **Joinery** below. The choice stays live and editable on the created
+  drawer; switching it re-dimensions the panels and re-shapes or suppresses the joinery
+  pockets. (Drawers created before this option carry an `overlap_box` boolean instead; they
+  keep working and are migrated when recreated.)
 - **Add a dedicated drawer front** (`has_front`): when checked, an extra front panel is
   added with its own parameters:
   - **Front width / Front height** (`width_front`, `height_front`): outer size of the front.
@@ -75,26 +75,35 @@ back's groove is open towards its lower edge, the front's and the sides' are clo
 up the sides and the front, slide the bottom in from the back, then drop the back in.
 (Front and Back are therefore not identical parts.)
 
-The four corners interlock the same way. The sides run the full `depth` and carry a dado
-at each end — `0.5 * t_side` wide, `0.5 * t_side` deep, offset `0.5 * t_side` from the end
-edge, running the full panel height. The front and back are `t_side` shorter than the
-`width` and get a matching half-lap (`0.5 * t_side` long and deep) at each end, so the
-outer half of their thickness forms the tongue that slides into the side dados.
+The corners depend on `corner_joint`. In every variant the sides run the full `depth` and
+carry the corner pocket on their inner face at each end, and the front and back tuck into
+them:
+
+- **Tongue and dado:** a dado at each side end — `0.5 * t_side` wide, `0.5 * t_side` deep,
+  offset `0.5 * t_side` from the end edge, running the full panel height. The front and
+  back are `t_side` shorter than the `width` and get a matching half-lap (`0.5 * t_side`
+  long and deep) at each end, so the outer half of their thickness forms the tongue that
+  slides into the side dados. Self-locating during glue-up.
+- **Half-lap:** the side pocket widens to `t_side` and runs out to the end edge (a rabbet).
+  The front and back (still `t_side` shorter) sit in it flush with the side ends and need
+  no cut of their own. One cut per corner; the bit only has to be `<= t_side`.
+- **Overlap:** no corner pocket; the front and back run the full `width` so all four walls
+  overlap — stock for box joints cut by hand.
 
 **Coordinate system:** The bottom panel is centered on the Part origin in X (width) and Y
 (depth); its bottom face is at `z = 0` (at the default `bottom_v_offset` of 0). The whole
 drawer Part is rotated 180° about Z so its front faces the FreeCAD "front" (−Y) view.
 
 **Recessed corners:** All joinery cuts sit on a panel's inner face, so every panel can be
-machined in a single setup. The price is that the front and back sit `0.5 * t_side` behind
-the ends of the sides — the sides form a small lip at the front and the back. With a
-dedicated drawer front that lip disappears behind it (the drawer front still lands on the
-ends of the sides, bridged by the screws through the box front); without one the recess is
-visible. The interior depth is `depth - 3 * t_side` and the bottom panel is
-`depth - 2 * t_side` long; the outer `width` and `depth` are unaffected.
-
-The joinery does not depend on whether a drawer front is requested. When **Box joints** is
-on, all box panels are dimensioned to fully overlap and no corner joint is cut.
+machined in a single setup. With *Tongue and dado* the price is that the front and back sit
+`0.5 * t_side` behind the ends of the sides — the sides form a small lip at the front and
+the back. With a dedicated drawer front that lip disappears behind it (the drawer front
+still lands on the ends of the sides, bridged by the screws through the box front); without
+one the recess is visible. The interior depth is then `depth - 3 * t_side` and the bottom
+panel `depth - 2 * t_side` long; with *Half-lap* and *Overlap* the front and back are flush,
+the interior depth is `depth - 2 * t_side` and the bottom `depth - t_side` long. The outer
+`width` and `depth` are unaffected either way, and the joinery does not depend on whether a
+drawer front is requested.
 
 **Parameters / data model:** Every parameter is stored as an editable, expression-capable
 property. Because FreeCAD raises a cyclic-reference error when a child body references its
@@ -180,9 +189,9 @@ File > Export or the TechDraw toolbar print it.
 - The models are the panel bodies laid flat, pocketed face up, at their nested places.
   The stock is the whole sheet.
 - **Slot passes** for the bottom groove of the walls, the corner joinery of the walls (the
-  end dados of the sides and the end laps of the front/back; not with `overlap_box`) and,
-  for a captured bottom, its four rabbet strips. Passes overlap by 50 % of the tool
-  diameter and overshoot open ends.
+  end dados or rabbets of the sides and, for tongue and dado, the end laps of the
+  front/back; none with *Overlap*) and, for a captured bottom, its four rabbet strips.
+  Passes overlap by 50 % of the tool diameter and overshoot open ends.
 - **One Slot per merged cut line** (through cut, 0.2 mm into the spoilboard) with a
   **Tags** dress-up: tabs at 1/3 and 2/3 of every panel edge on that line, 10 mm wide,
   3 mm high (at most half the thickness).
@@ -196,9 +205,10 @@ drawers is unchanged, so you may rename it; when the set changes a fresh contain
 generated name replaces the old ones.
 
 The corner joinery is modelled in the drawer bodies and mirrored here, so the pockets on
-the sheet match the solids. Note that the dados and laps are only `t_side / 2` wide, so
-the bit must be at most `t_side / 2` (6 mm for 12 mm stock); a wider bit is reported as a
-`Dado`/`Lap` problem before the run starts.
+the sheet match the solids. Note that the tongue-and-dado dados and laps are only
+`t_side / 2` wide, so that variant needs a bit of at most `t_side / 2` (6 mm for 12 mm
+stock); the half-lap rabbet accepts up to `t_side`. A bit that is too wide is reported as a
+`Corner`/`Lap` problem before the run starts.
 
 ### Sync Aliases Command
 

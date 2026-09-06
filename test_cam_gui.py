@@ -47,7 +47,7 @@ def main():
             "width": "400 mm", "height": "120 mm", "depth": "500 mm",
             "t_side": "12 mm", "t_bottom": "8 mm", "bottom_v_offset": "0 mm",
             "width_front": "440 mm", "height_front": "160 mm", "t_front": "18 mm",
-            "front_v_offset": "20 mm", "overlap_box": False, "has_front": False,
+            "front_v_offset": "20 mm", "corner_joint": 0, "has_front": False,
         },
     )
     holder = cam.drawer_holder(part)
@@ -84,8 +84,8 @@ def main():
         check(op.ViewObject.Proxy is not None, "{} has a view provider".format(op.Label))
     check(len(job.Model.Group) == 4, "4 clones on the 12 mm sheet (walls)")
     check(res.cut_slots > 0 and res.pocket_slots > 0, "ops created")
-    joints = [o for o in job.Proxy.allOperations() if "_Dado" in o.Label or "_Lap" in o.Label]
-    check(joints and all(("_Dado" in o.Label) == ("_SideL_" in o.Label or "_SideR_" in o.Label)
+    joints = [o for o in job.Proxy.allOperations() if "_Corner" in o.Label or "_Lap" in o.Label]
+    check(joints and all(("_Corner" in o.Label) == ("_SideL_" in o.Label or "_SideR_" in o.Label)
                          for o in joints),
           "sides get the corner dados, front/back the matching laps")
     check(res.gcode_files and os.path.exists(res.gcode_files[0]), "gcode written")

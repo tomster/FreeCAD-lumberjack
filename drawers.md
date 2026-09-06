@@ -44,16 +44,13 @@ the **back**'s groove is open towards its lower edge (it runs from the bottom of
 
 ### box
 
-the four corners of the box interlock like the bottom does, with a tongue-and-dado joint:
+the corner joinery is selected per drawer with the `corner_joint` enumeration (live-editable on the created drawer). the orientation is the same for every variant: the **sides run the full `depth`** and carry the corner pocket on their inner face at each end, the **front and back are `t_side` shorter than the `width`** and tuck into the sides. every cut sits on a panel's inner face, so each panel can be machined in a single setup.
 
-- the **sides** run the full `depth` and carry a **dado at each end**, `0.5 * t_side` wide and `0.5 * t_side` deep, cut into their inner face and offset `0.5 * t_side` from the end edge. the dado runs the full height of the panel.
-- the **front and back** are `t_side` shorter than the `width` and get a matching **half-lap** at each end, `0.5 * t_side` long and `0.5 * t_side` deep, again on the inner face and over the full height. what remains — the outer half of their thickness — is the tongue that slides into the side dados.
+- **tongue and dado** (default): the sides get a **dado at each end**, `0.5 * t_side` wide and `0.5 * t_side` deep, offset `0.5 * t_side` from the end edge. the front and back get a matching **half-lap** at each end, `0.5 * t_side` long and `0.5 * t_side` deep; what remains — the outer half of their thickness — is the tongue that slides into the side dados. the joint locates itself during glue-up. as a consequence the front and back sit `0.5 * t_side` behind the ends of the sides (the sides form a small lip at the front and the back; hidden by a dedicated drawer front, visible without one). interior depth `depth - 3 * t_side`, bottom panel `depth - 2 * t_side` long.
+- **half-lap**: the side pocket widens to `t_side` and runs out to the end edge — a rabbet, `t_side` wide and `0.5 * t_side` deep. the front and back sit in it **flush with the side ends** and get no cut of their own (strictly this is a rabbet joint, only the side is cut; the workbench keeps calling it half-lap). one cut per corner, and the bit only needs to be `<= t_side`. interior depth `depth - 2 * t_side`, bottom panel `depth - t_side` long.
+- **overlap**: box joints made by hand. we don't compute the joints themselves but simply dimension the panels so that they all fully overlap (front and back run the full `width`); no corner pocket is cut.
 
-this is the *recessed* variant of the joint: every cut sits on a panel's inner face, so each panel can be machined in a single setup. as a consequence the front and back sit `0.5 * t_side` behind the ends of the sides, i.e. the sides form a small lip at the front and the back. with a dedicated drawer front that lip is hidden behind it (the drawer front still lands on the ends of the sides); without one the recess is visible.
-
-because the sides run the full depth, the interior depth is `depth - 3 * t_side` and the bottom panel is `depth - 2 * t_side` long.
-
-optionally, the user can indicate that the box should be built using box joints (`overlap_box`). in that case we don't compute the joints themselves but simply dimension the panels of the box so that they all fully overlap; the dado and lap pockets are suppressed. the option stays live-editable on the created drawer.
+all pockets run the full height of the panel. the sides' end grain shows at the drawer face in every variant unless a dedicated drawer front covers it.
 
 ## datamodel
 
@@ -73,7 +70,7 @@ the bottom of the bottom should be at 0 (on the z-axis).
 
 the panel shall consist of an input field for the name of the drawer at the top.
 beneath this are the input fields for the box parameters.
-beneath those is a checkbox `overlap_box` - if it is set to true, the box shall be considered to be made via box joints and the dimensions of the box parts shall overlap, otherwise they need to be dimensioned to consider the joinery.
+beneath those is a combo box `corner_joint` selecting the corner joinery (tongue and dado / half-lap / overlap, see above); with overlap the box shall be considered to be made via box joints and the dimensions of the box parts shall overlap, otherwise they are dimensioned to consider the joinery.
 beneath those is a checkbox `has_front`. the value for that is intitially false, but shall be remembered between invocations, i.e. if the user sets it to true, the next drawer shall have that value as default.
 this must be true for all fields, actually - so that they retain the value (or expression) from the previous invocation, i.e. to streamline creation of multiple drawers with similar dimensions.
 if the checkbox is set to true, additional input fields for `height_front`, `width_front`, `t_front` and `front_v_offset` shall be activated.

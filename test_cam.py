@@ -71,13 +71,13 @@ DRAWER_A = {
     "width": "400 mm", "height": "120 mm", "depth": "500 mm",
     "t_side": "12 mm", "t_bottom": "8 mm", "bottom_v_offset": "0 mm",
     "width_front": "440 mm", "height_front": "160 mm", "t_front": "18 mm",
-    "front_v_offset": "20 mm", "overlap_box": False, "has_front": True,
+    "front_v_offset": "20 mm", "corner_joint": 0, "has_front": True,
 }
 DRAWER_C = {  # captured bottom (t_bottom == t_side), no drawer front
     "width": "300 mm", "height": "100 mm", "depth": "400 mm",
     "t_side": "12 mm", "t_bottom": "12 mm", "bottom_v_offset": "0 mm",
     "width_front": "340 mm", "height_front": "140 mm", "t_front": "18 mm",
-    "front_v_offset": "20 mm", "overlap_box": False, "has_front": False,
+    "front_v_offset": "20 mm", "corner_joint": 0, "has_front": False,
 }
 
 
@@ -122,7 +122,7 @@ def test_geometry(cam, nesting):
     check(sheets[0].items[0].rotated, "panel longer than the sheet width is rotated")
 
 
-def check_panels(cam, drawers, part, holder):
+def check_panels(cam, drawers, part, holder, interference=True):
     """Panel solids match the frames cam.py derives, and the box panels do not overlap."""
     import Part
 
@@ -136,7 +136,7 @@ def check_panels(cam, drawers, part, holder):
         want = sorted([frame.L, frame.W, frame.t])
         check(all(abs(a - b) < 1e-6 for a, b in zip(got, want)),
               "{} {}: solid {} matches the CAM frame {}".format(part.Label, role, got, want))
-    box = [r for r in ("SideL", "SideR", "Front", "Back", "Bottom") if r in bodies]
+    box = [r for r in ("SideL", "SideR", "Front", "Back", "Bottom") if r in bodies and interference]
     for i, ra in enumerate(box):
         for rb in box[i + 1:]:
             v = bodies[ra].Shape.common(bodies[rb].Shape).Volume
@@ -208,6 +208,42 @@ def main():
     # the corner joinery modelled the box panels must no longer interpenetrate.
     for dp, dh in ((part, holder), (part_c, holder_c)):
         check_panels(cam, drawers, dp, dh)
+    # The other two corner joints are live switches on the same bodies.
+    bodies_c = {r: b for r, b in drawers.drawer_panels(part_c)}
+    holder_c.corner_joint = "Half-lap"
+    doc.recompute()
+    check(cam.DrawerParams(holder_c).corner_joint == drawers.JOINT_HALF_LAP, "half-lap read back")
+    check_panels(cam, drawers, part_c, holder_c)
+    fb = bodies_c["Front"].Shape.BoundBox
+    sb = bodies_c["SideL"].Shape.BoundBox
+    check(abs(fb.YMax - sb.YMax) < 1e-6 and abs(fb.XLength - 288.0) < 1e-6, "half-lap: front flush with the side ends, t_side shorter")
+    check(abs(bodies_c["Bottom"].Shape.BoundBox.YLength - 388.0) < 1e-6, "half-lap: bottom is depth - t_side long")
+    holder_c.corner_joint = "Overlap"
+    doc.recompute()
+    check_panels(cam, drawers, part_c, holder_c, interference=False)  # overlapping stock by design
+    check(abs(bodies_c["Front"].Shape.BoundBox.XLength - 300.0) < 1e-6, "overlap: front runs the full width")
+    check(not [f for f in bodies_c["SideL"].Group if f.Name.endswith("_CornerFront") and not f.Suppressed], "overlap: corner pockets suppressed")
+    holder_c.corner_joint = "Tongue and dado"
+    doc.recompute()
+    check_panels(cam, drawers, part_c, holder_c)
+
+    # Legacy holders (pre corner_joint) only carry the overlap_box boolean.
+    legacy = doc.addObject("App::Part", "Legacy")
+    lh = doc.addObject("App::FeaturePython", "Legacy_Params")
+    legacy.addObject(lh)
+    for prop in drawers._HOLDER_LENGTH_PROPS:
+        lh.addProperty("App::PropertyLength", prop)
+        setattr(lh, prop, DRAWER_C[prop])
+    lh.addProperty("App::PropertyBool", "overlap_box")
+    lh.addProperty("App::PropertyBool", "has_front")
+    lh.overlap_box = True
+    doc.recompute()
+    check(drawers.drawer_holder(legacy) == lh, "legacy holder detected")
+    check(drawers.read_drawer_values(lh)["corner_joint"] == drawers.JOINT_OVERLAP, "legacy overlap_box=True reads as Overlap")
+    check(cam.DrawerParams(lh).overlap_box and not cam.DrawerParams(lh).tongue_dado, "DrawerParams reads the legacy holder")
+    lh.overlap_box = False
+    check(drawers.read_drawer_values(lh)["corner_joint"] == drawers.JOINT_TONGUE_DADO, "legacy overlap_box=False reads as tongue and dado")
+    drawers.delete_drawer(legacy)
     results, problems, warnings = cam.run([(part, holder), (part_c, holder_c)], s)
     check(not problems, "run succeeded: {}".format(problems))
     by_t = {}
@@ -332,11 +368,32 @@ def main():
     check([o for o in ops if o.Label.startswith("Captured_Bottom_Rabbet")], "captured bottom has rabbet passes")
     check(not [o for o in ops if o.Label.startswith("Drawer_Bottom_Rabbet")], "inserted bottom has none")
     for prefix in ("Captured_", "Drawer_"):
-        for role, feature in (("SideL", "Dado"), ("SideR", "Dado"), ("Front", "Lap"), ("Back", "Lap")):
+        for role, feature in (("SideL", "Corner"), ("SideR", "Corner"), ("Front", "Lap"), ("Back", "Lap")):
             ends = sorted(set(o.Label.split("_")[-2] for o in ops
                               if o.Label.startswith("{}{}_{}".format(prefix, role, feature))))
-            want = ["DadoBack", "DadoFront"] if feature == "Dado" else ["LapLeft", "LapRight"]
+            want = ["CornerBack", "CornerFront"] if feature == "Corner" else ["LapLeft", "LapRight"]
             check(ends == want, "{}{} has both {} cuts: {}".format(prefix, role, feature, ends))
+    # Half-lap: corner rabbets t_side wide, no laps; the wide rabbet accepts an 8 mm bit
+    # while the 6 mm groove of the captured drawer's inserted sibling still does not.
+    holder_c.corner_joint = "Half-lap"
+    doc.recompute()
+    params_h = cam.DrawerParams(holder_c)
+    frame_h = cam.panel_frame("SideL", params_h)
+    corners_h = [r for r in cam.pocket_regions("SideL", params_h, frame_h) if r.name.startswith("Corner")]
+    check(len(corners_h) == 2 and all(abs(r.u1 - r.u0 - 12.0) < 1e-9 for r in corners_h), "half-lap corner rabbets are t_side wide")
+    check(abs(max(r.u1 for r in corners_h) - frame_h.L / 2.0) < 1e-9, "half-lap rabbet runs to the end edge")
+    check(not [r for r in cam.pocket_regions("Front", params_h, cam.panel_frame("Front", params_h)) if r.name.startswith("Lap")], "half-lap: no laps on the front")
+    wide = cam.CamSettings()
+    wide.__dict__.update(s.__dict__)
+    wide.tool_d = 8.0
+    problems_h, _ = cam.validate_drawer(part_c, params_h, wide)
+    check(problems_h and not any("Corner" in p or "Lap" in p for p in problems_h),
+          "8 mm bit fits the half-lap rabbets; only the 6 mm groove/bottom rabbet reject it: {}".format(problems_h))
+    holder_c.corner_joint = "Tongue and dado"
+    doc.recompute()
+    problems_t, _ = cam.validate_drawer(part_c, cam.DrawerParams(holder_c), wide)
+    check(any("Corner" in p for p in problems_t) and any("Lap" in p for p in problems_t),
+          "8 mm bit is rejected for the tongue-and-dado corners")
     check(abs(job.SetupSheet.ClearanceHeightOffset.Value - 22) < 1e-6, "clearance offset = clamp height + 2")
 
     # --- G-code ---------------------------------------------------------------------

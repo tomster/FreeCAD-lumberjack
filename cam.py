@@ -29,10 +29,12 @@ centered on its own origin, see drawers.py) and mapped into job coordinates thro
 model clone's Placement, which is derived from the nest.
 The corner joinery *is* modelled in the drawer bodies, but every dimension is re-derived
 here (DrawerParams, pocket_regions) rather than read back from the solids, so both must be
-kept in lock-step: the sides run the full depth and carry a t_side/2 wide, t_side/2 deep
-dado at each end, offset t_side/2 from the end edge; the front and back are t_side shorter
-than the width and get a matching t_side/2 x t_side/2 lap at each end. All of it sits on
-the inner face, and none of it is cut when overlap_box is set.
+kept in lock-step with drawers.create_drawer. The sides always run the full depth and carry
+a corner pocket on their inner face at each end; the front and back tuck into them:
+  tongue and dado: pocket t_side/2 wide, offset t_side/2 from the end; front/back t_side
+      shorter, lapped t_side/2 x t_side/2 at each end, recessed t_side/2
+  half-lap: pocket t_side wide out to the end edge; front/back t_side shorter, no cut
+  overlap: no pockets, all four walls fully overlap
 
 Verified against the FreeCAD 1.1.3 CAM API.
 """
@@ -114,12 +116,21 @@ class DrawerParams:
         self.width_front = _qty(holder.width_front)
         self.height_front = _qty(holder.height_front)
         self.t_front = _qty(holder.t_front)
-        self.overlap_box = bool(holder.overlap_box)
+        self.corner_joint = _drawers.corner_joint_of(holder)
         self.has_front = bool(holder.has_front)
 
+    @property
+    def overlap_box(self):
+        return self.corner_joint == _drawers.JOINT_OVERLAP
+
+    @property
+    def tongue_dado(self):
+        return self.corner_joint == _drawers.JOINT_TONGUE_DADO
+
     # Same derivations as drawers.create_drawer(): the sides always run the full depth
-    # and carry the corner dados, the front and back are shortened by t_side and lap into
-    # them (unless overlap_box dimensions all four walls to fully overlap).
+    # and carry the corner pockets, the front and back are shortened by t_side and tuck
+    # into them (unless overlap_box dimensions all four walls to fully overlap). Only the
+    # tongue-and-dado variant recesses the front and back by t_side / 2.
     @property
     def side_len(self):
         return self.depth
@@ -134,7 +145,7 @@ class DrawerParams:
 
     @property
     def bottom_y(self):
-        return self.depth - (self.t_side if self.overlap_box else 2 * self.t_side)
+        return self.depth - (2 * self.t_side if self.tongue_dado else self.t_side)
 
     def thickness(self, role):
         if role == "Bottom":
@@ -265,13 +276,16 @@ def pocket_regions(role, p, frame):
             # names follow the flipped end (they match the pocket names in drawers.py).
             f = -1.0 if role in ("SideR", "Back") else 1.0
             if role in ("SideL", "SideR"):
-                # Corner dados: ts/2 wide, offset ts/2 from each end.
-                ends = (("DadoFront", f), ("DadoBack", -f))
-                near, far = ts / 2.0, ts
-            else:
+                # Corner pockets: a ts/2 dado offset ts/2 from the end (tongue and dado)
+                # or a ts wide rabbet out to the end edge (half-lap).
+                ends = (("CornerFront", f), ("CornerBack", -f))
+                near, far = (ts / 2.0 if p.tongue_dado else 0.0), ts
+            elif p.tongue_dado:
                 # Matching half-laps at the very ends of the front/back.
                 ends = (("LapRight", f), ("LapLeft", -f))
                 near, far = 0.0, ts / 2.0
+            else:
+                ends = ()
             for name, sign in ends:
                 regions.append(Region(
                     name, sign * (L / 2.0 - near), sign * (L / 2.0 - far),

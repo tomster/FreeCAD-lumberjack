@@ -54,16 +54,20 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   all CAM geometry is computed in body-local coordinates and mapped through the model
   clone's Placement. Keep it that way.
 - Everything parametric goes through the `<Part>_Params` holder with expressions
-  (ternaries for live switches such as `overlap_box` and `t_bottom < t_side`). The
-  bottom rabbet and the corner dado/lap pockets are switched off via an expression on the
-  pocket's `Suppressed` property.
-- Corner joinery (sides run the full depth and carry a `t_side/2` dado at each end, the
-  front/back are `t_side` shorter and lap into them, all cuts on the inner face) is
-  modelled in the bodies *and* re-derived in `cam.py` (`DrawerParams`, `pocket_regions`).
-  The two must be changed in lock-step; `test_cam.check_panels` pins them together
+  (ternaries for live switches such as `corner_joint == n` and `t_bottom < t_side`; an
+  `App::PropertyEnumeration` evaluates to its *index* in expressions). The bottom rabbet
+  and the corner/lap pockets are switched off via an expression on the pocket's
+  `Suppressed` property.
+- Corner joinery is the `corner_joint` enumeration (`drawers.CORNER_JOINTS`: tongue and
+  dado / half-lap / overlap). One orientation for all: sides run the full depth and carry
+  the `Corner*` pocket at each end (`t_side/2` dado or `t_side` rabbet), front/back are
+  `t_side` shorter; only tongue and dado adds `Lap*` pockets and the `t_side/2` recess. It
+  is modelled in the bodies *and* re-derived in `cam.py` (`DrawerParams`,
+  `pocket_regions`); change both in lock-step — `test_cam.check_panels` pins them together
   (panel bbox vs. `panel_frame`, plus a pairwise no-interpenetration check).
-- Drawer detection is by structure (holder with `width`, `t_side`, `t_bottom`,
-  `overlap_box`; bodies named `<Part>_<Role>`), see `drawers.drawer_holder` /
+- Drawer detection is by structure (holder with `width`, `t_side`, `t_bottom` and
+  `corner_joint` — or the legacy `overlap_box` bool, mapped by `drawers.corner_joint_of`;
+  bodies named `<Part>_<Role>`), see `drawers.drawer_holder` /
   `find_drawer_part`. Jobs carry `LumberjackDrawers`, `LumberjackThickness`,
   `LumberjackSheet`; the `App::Part` container of a run carries `LumberjackCamGroup`
   and `LumberjackDrawers` (so selecting it resolves to its drawers). Jobs are told apart
