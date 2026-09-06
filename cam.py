@@ -39,6 +39,8 @@ a corner pocket on their inner face at each end; the front and back tuck into th
       and validate_drawer reports it as a manual cut
   half-lap: pocket t_side wide out to the end edge; front/back t_side shorter, no cut
   overlap: no pockets, all four walls fully overlap
+Optional handle slots (handle_slot) are through stadiums in the sides, milled with parallel
+passes whose ends follow the semicircles (Region shape "slot").
 
 Verified against the FreeCAD 1.1.3 CAM API.
 """
@@ -122,6 +124,11 @@ class DrawerParams:
         self.t_front = _qty(holder.t_front)
         self.corner_joint = _drawers.corner_joint_of(holder)
         self.has_front = bool(holder.has_front)
+        # Handle slots were added later; older holders lack the properties.
+        self.handle_slot = bool(getattr(holder, "handle_slot", False))
+        self.handle_diameter = _qty(getattr(holder, "handle_diameter", 0.0))
+        self.handle_width = _qty(getattr(holder, "handle_width", 0.0))
+        self.handle_v_offset = _qty(getattr(holder, "handle_v_offset", 0.0))
 
     @property
     def overlap_box(self):
@@ -265,16 +272,19 @@ class Region:
 
     Open-ended regions (the default) reach a panel edge along the pass direction and the
     passes overshoot them; a closed region is a stopped pocket whose passes end with the
-    tool's round end tangent to the region boundary.
+    tool's round end tangent to the region boundary. shape "slot" is a stadium (closed):
+    the bounding rectangle's short sides are replaced by semicircles and every pass ends
+    with the tool tangent to them.
     """
 
-    def __init__(self, name, u0, u1, v0, v1, depth, along, closed=False):
+    def __init__(self, name, u0, u1, v0, v1, depth, along, closed=False, shape="rect"):
         self.name = name
         self.u0, self.u1 = min(u0, u1), max(u0, u1)
         self.v0, self.v1 = min(v0, v1), max(v0, v1)
         self.depth = depth
         self.along = along  # "u" or "v": direction of the passes
-        self.closed = closed
+        self.shape = shape
+        self.closed = closed or shape == "slot"
 
     @property
     def width_across(self):
@@ -299,6 +309,14 @@ def pocket_regions(role, p, frame):
         regions.append(Region("Groove", -gu, gu,
                               -W / 2.0 if role == "Back" else g0, g1, ts / 2.0, "u",
                               closed=stopped))
+        if role in ("SideL", "SideR") and p.handle_slot:
+            # Through handle slot, centred in the depth, top edge handle_v_offset below
+            # the top edge of the side.
+            top = W / 2.0 - p.handle_v_offset
+            regions.append(Region(
+                "Handle", -p.handle_width / 2.0, p.handle_width / 2.0,
+                top - p.handle_diameter, top, ts + THROUGH_OVERCUT, "u", shape="slot",
+            ))
         if not p.overlap_box:
             # SideR's and Back's panel-frame U points against the drawer axis, so the
             # names follow the flipped end (they match the pocket names in drawers.py).
@@ -336,7 +354,9 @@ def slot_passes(region, tool_d):
 
     Returns a list of ((u, v), (u, v)) start/end pairs in the panel frame. Passes overshoot
     both ends of an open-ended region; for a closed (stopped) region they stop with the
-    tool's round end tangent to the boundary. Raises ToolTooWide if the tool does not fit.
+    tool's round end tangent to the boundary, and for a "slot" each pass is shortened so
+    the tool stays tangent to the end semicircles (the tool centre runs on the arc offset
+    inwards by the tool radius). Raises ToolTooWide if the tool does not fit.
     """
     if region.along == "u":
         a0, a1, b0, b1 = region.u0, region.u1, region.v0, region.v1
@@ -363,7 +383,12 @@ def slot_passes(region, tool_d):
     ext = -tool_d / 2.0 if region.closed else tool_d / 2.0 + PASS_EXTENSION_EXTRA
     passes = []
     for i, c in enumerate(centers):
-        start, end = a0 - ext, a1 + ext
+        if region.shape == "slot":
+            R = w / 2.0
+            reach = math.sqrt(max((R - tool_d / 2.0) ** 2 - (c - (b0 + b1) / 2.0) ** 2, 0.0))
+            start, end = a0 + R - reach, a1 - R + reach
+        else:
+            start, end = a0 - ext, a1 + ext
         if i % 2:
             start, end = end, start  # alternate direction between neighbouring passes
         if region.along == "u":

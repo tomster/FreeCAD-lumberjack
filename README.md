@@ -67,6 +67,11 @@ The drawer is placed inside the currently active container (if any).
   - **Front thickness** (`t_front`).
   - **Front offset** (`front_v_offset`): positive values move the front *down*; the front's
     lower edge sits at `z = -front_v_offset`.
+- **Handle slots in the sides** (`handle_slot`, live): a through slot in each side for
+  carrying the box — a stadium **Slot width** (`handle_width`, 100 mm) wide and **Slot
+  diameter** (`handle_diameter`, 32 mm) high, centred in the depth, its top edge **Slot
+  offset from top** (`handle_v_offset`, 20 mm) below the side's top edge. No roundovers are
+  modelled; apply them off the CNC. The slot must stay above the bottom groove.
 
 **Joinery:** The bottom is captured in a groove (width `0.5 * t_bottom`) cut into the inner
 faces of the side, front, and back panels ("captured-bottom drawer"), and the bottom panel
@@ -204,7 +209,9 @@ File > Export or the TechDraw toolbar print it.
   Passes overlap by 50 % of the tool diameter and overshoot open ends; the stopped side
   grooves of the tongue-and-dado variants end with the tool tangent to the stop. The
   outer-face laps of the *flush* tongue and dado are not machined; the run summary lists
-  them as a manual cut.
+  them as a manual cut. Handle slots are milled through with parallel passes whose ends
+  follow the semicircles (the tool centre runs on the arc offset inwards by the tool
+  radius), leaving scallops of well under a millimetre at the ends.
 - **One Slot per merged cut line** (through cut, 0.2 mm into the spoilboard) with a
   **Tags** dress-up: tabs at 1/3 and 2/3 of every panel edge on that line, 10 mm wide,
   3 mm high (at most half the thickness).

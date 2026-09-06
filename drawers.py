@@ -63,6 +63,12 @@ tuck into them.
   Legacy drawers carry an overlap_box boolean instead; corner_joint_of() maps it. The
   index order is append-only: saved drawers bake the indices into their expressions.
 
+Handle slots (handle_slot, live): an optional through slot in each side for carrying the
+box -- a stadium handle_width wide and handle_diameter high, centred in the depth, its top
+edge handle_v_offset below the side's top edge. Modelled as one pocket per side that is
+suppressed unless handle_slot is set. No roundovers or other dress-ups: those are applied
+off the CNC.
+
 The whole drawer Part is rotated 180 deg about Z so its front (the optional drawer front
 and the front wall) faces the FreeCAD "front" (-Y) view direction.
 """
@@ -122,6 +128,14 @@ FRONT_FIELDS = [
     ("drawer_front_v_offset", "Front offset", "20 mm"),
 ]
 
+HANDLE_FIELDS = [
+    ("drawer_handle_diameter", "Slot diameter", "32 mm"),
+    ("drawer_handle_width", "Slot width", "100 mm"),
+    ("drawer_handle_v_offset", "Slot offset from top", "20 mm"),
+]
+
+ALL_FIELDS = BOX_FIELDS + FRONT_FIELDS + HANDLE_FIELDS
+
 # Maps a preference key to the holder property name it drives.
 _KEY_TO_PROP = {
     "drawer_width": "width",
@@ -134,7 +148,13 @@ _KEY_TO_PROP = {
     "drawer_height_front": "height_front",
     "drawer_t_front": "t_front",
     "drawer_front_v_offset": "front_v_offset",
+    "drawer_handle_diameter": "handle_diameter",
+    "drawer_handle_width": "handle_width",
+    "drawer_handle_v_offset": "handle_v_offset",
 }
+
+# Default expression per holder property; used for properties a (legacy) holder lacks.
+_PROP_DEFAULTS = {_KEY_TO_PROP[key]: default for key, _label, default in ALL_FIELDS}
 
 # Corner joinery variants; the holder's corner_joint enumeration uses these indices.
 # Append-only: the indices are baked into the expressions of saved drawers.
@@ -305,10 +325,14 @@ def read_drawer_values(holder):
         expr = exprs.get(prop)
         if expr:
             values[prop] = _strip_outer_parens(expr)
-        else:
+        elif prop in holder.PropertiesList:
             values[prop] = "{} mm".format(getattr(holder, prop).Value)
+        else:
+            # Property introduced after this drawer was created.
+            values[prop] = _PROP_DEFAULTS[prop]
     values["corner_joint"] = corner_joint_of(holder)
     values["has_front"] = bool(holder.has_front)
+    values["handle_slot"] = bool(getattr(holder, "handle_slot", False))
     return values
 
 
@@ -329,6 +353,9 @@ _HOLDER_LENGTH_PROPS = [
     "height_front",
     "t_front",
     "front_v_offset",
+    "handle_diameter",
+    "handle_width",
+    "handle_v_offset",
 ]
 
 
@@ -342,7 +369,7 @@ def create_parameter_holder(doc, part, name, label, values):
         name: base name of the drawer (used to build the holder name)
         values: dict mapping holder property names to expression strings (length props)
                 plus "corner_joint" (index or name, see CORNER_JOINTS) and the "has_front"
-                boolean.
+                and "handle_slot" booleans. Missing length props get their defaults.
 
     Returns:
         The holder object.
@@ -371,14 +398,23 @@ def create_parameter_holder(doc, part, name, label, values):
         "Drawer",
         "Whether the drawer has a dedicated front panel",
     )
+    holder.addProperty(
+        "App::PropertyBool",
+        "handle_slot",
+        "Drawer",
+        "Through slot in each side for carrying the box (handle_width x handle_diameter, "
+        "top edge handle_v_offset below the side's top edge)",
+    )
 
     # Switches first (referenced by ternary expressions).
     holder.corner_joint = joint_index(values.get("corner_joint", JOINT_TONGUE_DADO))
     holder.has_front = bool(values.get("has_front", False))
+    holder.handle_slot = bool(values.get("handle_slot", False))
 
-    # Apply the length expressions.
+    # Apply the length expressions (defaults for props the caller did not supply, so a
+    # suppressed feature's sketch still solves).
     for prop in _HOLDER_LENGTH_PROPS:
-        expr = values.get(prop)
+        expr = values.get(prop) or _PROP_DEFAULTS.get(prop)
         if expr:
             try:
                 holder.setExpression(prop, "({})".format(expr))
@@ -471,6 +507,72 @@ def _add_positioned_rect(sketch, u0_init=0.0, v0_init=0.0, du_init=10.0, dv_init
     du_idx = sketch.addConstraint(Sketcher.Constraint("DistanceX", g + 0, 1, g + 0, 2, du))
     dv_idx = sketch.addConstraint(Sketcher.Constraint("DistanceY", g + 1, 1, g + 1, 2, dv))
     return u0_idx, v0_idx, du_idx, dv_idx
+
+
+def _add_slot(sketch, a=34.0, r=16.0, cy=0.0):
+    """
+    Add a horizontal slot (stadium) centred on the V axis: two semicircles of radius r
+    whose centres are 2a apart, at height cy.
+
+    Returns (dia_idx, span_idx, half_idx, cy_idx): constraint indices for the diameter,
+    the centre distance, the left centre's distance to the V axis (= half the centre
+    distance) and the centre height. Fully constrained (18 DOF, 18 equations).
+    """
+    import math
+
+    n = FreeCAD.Vector(0, 0, 1)
+    arc_l = sketch.addGeometry(Part.ArcOfCircle(
+        Part.Circle(FreeCAD.Vector(-a, cy, 0), n, r), math.pi / 2, 3 * math.pi / 2))
+    arc_r = sketch.addGeometry(Part.ArcOfCircle(
+        Part.Circle(FreeCAD.Vector(a, cy, 0), n, r), -math.pi / 2, math.pi / 2))
+    top = sketch.addGeometry(Part.LineSegment(
+        FreeCAD.Vector(-a, cy + r, 0), FreeCAD.Vector(a, cy + r, 0)))
+    bot = sketch.addGeometry(Part.LineSegment(
+        FreeCAD.Vector(a, cy - r, 0), FreeCAD.Vector(-a, cy - r, 0)))
+    # Endpoint-to-endpoint tangency (coincident + tangent), as the Sketcher slot tool does.
+    sketch.addConstraint(Sketcher.Constraint("Tangent", arc_l, 1, top, 1))
+    sketch.addConstraint(Sketcher.Constraint("Tangent", top, 2, arc_r, 2))
+    sketch.addConstraint(Sketcher.Constraint("Tangent", arc_r, 1, bot, 1))
+    sketch.addConstraint(Sketcher.Constraint("Tangent", bot, 2, arc_l, 2))
+    sketch.addConstraint(Sketcher.Constraint("Equal", arc_l, arc_r))
+    sketch.addConstraint(Sketcher.Constraint("Horizontal", top))
+    dia_idx = sketch.addConstraint(Sketcher.Constraint("Diameter", arc_l, 2 * r))
+    span_idx = sketch.addConstraint(Sketcher.Constraint("DistanceX", arc_l, 3, arc_r, 3, 2 * a))
+    half_idx = sketch.addConstraint(Sketcher.Constraint("DistanceX", arc_l, 3, -1, 1, a))
+    cy_idx = sketch.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, arc_l, 3, cy))
+    return dia_idx, span_idx, half_idx, cy_idx
+
+
+def _cut_handle_slot(doc, body, dia_expr, width_expr, cy_expr, suppress_expr):
+    """
+    Cut a through slot (stadium) into a side body, sketched on its YZ plane.
+
+    dia_expr is the slot height (= semicircle diameter), width_expr the overall width,
+    cy_expr the centre height in body-local Z; suppress_expr drives Suppressed.
+    """
+    sketch = doc.addObject("Sketcher::SketchObject", "{}_HandleSk".format(body.Name))
+    body.addObject(sketch)
+    plane = _datum_plane(body, "YZ_Plane")
+    if plane is not None:
+        sketch.AttachmentSupport = [(plane, "")]
+        sketch.MapMode = "FlatFace"
+    dia_idx, span_idx, half_idx, cy_idx = _add_slot(sketch)
+    span = "({w}) - ({d})".format(w=width_expr, d=dia_expr)
+    sketch.setExpression("Constraints[{}]".format(dia_idx), dia_expr)
+    sketch.setExpression("Constraints[{}]".format(span_idx), span)
+    sketch.setExpression("Constraints[{}]".format(half_idx), "({}) / 2".format(span))
+    sketch.setExpression("Constraints[{}]".format(cy_idx), cy_expr)
+    doc.recompute()
+
+    pocket = doc.addObject("PartDesign::Pocket", "{}_Handle".format(body.Name))
+    pocket.Profile = sketch
+    body.addObject(pocket)
+    pocket.Type = "ThroughAll"
+    pocket.SideType = "Symmetric"
+    pocket.setExpression("Suppressed", suppress_expr)
+    sketch.Visibility = False
+    doc.recompute()
+    return pocket
 
 
 def _create_body(doc, part, name, label):
@@ -694,6 +796,12 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     )
     corner_front_v0 = "{d} / 2 - {ts}".format(d=H("depth"), ts=H("t_side"))
     corner_back_v0 = "-{d} / 2 + {ts} - ({dv})".format(d=H("depth"), ts=H("t_side"), dv=corner_dv)
+    # Handle slots in the sides: stadium, centred in the depth, top edge handle_v_offset
+    # below the top edge; through the thickness; suppressed unless handle_slot is set.
+    handle_suppress = "{hs} == 1 ? 0 : 1".format(hs=H("handle_slot"))
+    handle_cy = "{h} / 2 - {off} - {d} / 2".format(
+        h=H("height"), off=H("handle_v_offset"), d=H("handle_diameter")
+    )
     # Matching laps at the ends of the front/back (u = length): t_side/2 long. In v
     # (thickness) they take the inner half when recessed and the outer half when flush.
     lap_left_u0 = "-({fb}) / 2".format(fb=fb_len)
@@ -715,6 +823,9 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
             u0_expr="0", du_expr=half_ts, v0_expr=v0, dv_expr=corner_dv,
             name=pocket_name, suppress_expr=corner_suppress,
         )
+    _cut_handle_slot(
+        doc, side_l, H("handle_diameter"), H("handle_width"), handle_cy, handle_suppress
+    )
     _set_placement(side_l, x_expr="-({})".format(half_w), z_expr="{} / 2".format(height))
 
     # --- Right side wall (inner face -X) -------------------------------------
@@ -733,6 +844,9 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
             v0_expr=v0, dv_expr=corner_dv,
             name=pocket_name, suppress_expr=corner_suppress,
         )
+    _cut_handle_slot(
+        doc, side_r, H("handle_diameter"), H("handle_width"), handle_cy, handle_suppress
+    )
     _set_placement(side_r, x_expr=half_w, z_expr="{} / 2".format(height))
 
     # --- Back wall (inner face +Y) -------------------------------------------
@@ -1010,7 +1124,7 @@ class CreateDrawerDialog(QtWidgets.QDialog):
 
         # Seed each length property from the drawer being recreated, else from the
         # remembered preference (or default).
-        for key, _label, default in BOX_FIELDS + FRONT_FIELDS:
+        for key, _label, default in ALL_FIELDS:
             prop = _KEY_TO_PROP[key]
             if self.existing_values is not None:
                 expr = self.existing_values[prop]
@@ -1132,6 +1246,23 @@ class CreateDrawerDialog(QtWidgets.QDialog):
             self.front_check.toggled.connect(self.front_group.setEnabled)
             self.front_group.setEnabled(self.front_check.isChecked())
 
+            # handle_slot checkbox + group
+            self.handle_check = QtWidgets.QCheckBox("Handle slots in the sides")
+            if self.existing_values is not None:
+                self.handle_check.setChecked(self.existing_values["handle_slot"])
+            else:
+                self.handle_check.setChecked(_get_last_bool("drawer_handle_slot", False))
+            layout.addWidget(self.handle_check)
+
+            self.handle_group = QtWidgets.QGroupBox("Handle slots")
+            handle_layout = QtWidgets.QVBoxLayout(self.handle_group)
+            for key, label_text, _default in HANDLE_FIELDS:
+                self._add_field_row(handle_layout, label_text, _KEY_TO_PROP[key])
+            layout.addWidget(self.handle_group)
+
+            self.handle_check.toggled.connect(self.handle_group.setEnabled)
+            self.handle_group.setEnabled(self.handle_check.isChecked())
+
         layout.addSpacing(12)
         button_row = QtWidgets.QHBoxLayout()
         self.create_button = QtWidgets.QPushButton(
@@ -1165,7 +1296,7 @@ class CreateDrawerDialog(QtWidgets.QDialog):
         if not self.template:
             return None
         values = {}
-        for key, _label, _default in BOX_FIELDS + FRONT_FIELDS:
+        for key, _label, _default in ALL_FIELDS:
             prop = _KEY_TO_PROP[key]
             expr = self._expr_for(prop)
             if not expr:
@@ -1176,6 +1307,7 @@ class CreateDrawerDialog(QtWidgets.QDialog):
             values[prop] = expr
         values["corner_joint"] = self.joint_combo.currentIndex()
         values["has_front"] = self.front_check.isChecked()
+        values["handle_slot"] = self.handle_check.isChecked()
         values["name"] = self.name_edit.text().strip()
         return values
 
@@ -1238,10 +1370,11 @@ def show_create_drawer_dialog():
 
     # Remember all fields for next time (only once the values are known good).
     _set_last_str("drawer_name", name)
-    for key, _label, _default in BOX_FIELDS + FRONT_FIELDS:
+    for key, _label, _default in ALL_FIELDS:
         _set_last_str(key, values[_KEY_TO_PROP[key]])
     _set_last_str("drawer_corner_joint", CORNER_JOINTS[joint_index(values["corner_joint"])])
     _set_last_bool("drawer_has_front", values["has_front"])
+    _set_last_bool("drawer_handle_slot", values["handle_slot"])
 
     return create_drawer(name, values)
 
@@ -1290,6 +1423,17 @@ def _validate_values(values):
             ),
             (h > groove_top, "height must be greater than the top of the bottom groove"),
         ]
+        if values.get("handle_slot"):
+            hd = probe.handle_diameter.Value
+            hw = probe.handle_width.Value
+            hoff = probe.handle_v_offset.Value
+            checks += [
+                (hd > 0, "handle slot diameter must be > 0"),
+                (hw > hd, "handle slot width must be greater than its diameter"),
+                (hw < d, "handle slot width must be smaller than the depth"),
+                (hoff >= 0, "handle slot offset must be >= 0"),
+                (h - hoff - hd > groove_top, "handle slot must stay above the bottom groove"),
+            ]
         for ok, msg in checks:
             if not ok:
                 return False, msg

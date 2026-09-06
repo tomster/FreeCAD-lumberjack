@@ -55,6 +55,10 @@ the corner joinery is selected per drawer with the `corner_joint` enumeration (l
 
 all pockets run the full height of the panel. the sides' end grain shows at the drawer face in every variant unless a dedicated drawer front covers it.
 
+## handle slots
+
+optionally (`handle_slot`, live-editable) each **side** gets a through slot for carrying the box: a stadium `handle_width` wide (default 100 mm) and `handle_diameter` high (default 32 mm, the diameter of its semicircular ends), centred in the depth, with its top edge `handle_v_offset` (default 20 mm) below the top edge of the side. no roundovers or other dress-ups are modelled — those are applied off the CNC (no automatic tool changer for now). CAM mills the slot through with parallel passes whose ends follow the semicircles; the slot must stay above the bottom groove and narrower than the depth.
+
 ## datamodel
 
 all parameters must be paremeterized, so that the resulting `Std_part` shall have custom attributes that can be altered after creation and the values need to be reflected in the bodies.

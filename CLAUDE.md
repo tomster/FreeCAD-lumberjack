@@ -71,7 +71,13 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   check). The expression language has no `||`/`&&`; use nested ternaries. With the
   tongue-and-dado variants the sides' bottom groove is a *stopped* pocket (`_cut_pocket`
   `length_expr`, `cam.Region(closed=True)` — passes end a tool radius inside instead of
-  overshooting).
+  overshooting). Handle slots (`handle_slot` + three lengths) are a stadium sketch
+  (`_add_slot`, endpoint tangencies like the Sketcher slot tool) pocketed through each
+  side; CAM uses `Region(shape="slot")`, whose passes end on the inset arc.
+- Holder properties added after a drawer was created are optional on read:
+  `read_drawer_values` falls back to `_PROP_DEFAULTS`, `cam.DrawerParams` to `getattr`
+  defaults; `create_parameter_holder` fills unsupplied lengths with the defaults so a
+  suppressed feature's sketch still solves.
 - Drawer detection is by structure (holder with `width`, `t_side`, `t_bottom` and
   `corner_joint` — or the legacy `overlap_box` bool, mapped by `drawers.corner_joint_of`;
   bodies named `<Part>_<Role>`), see `drawers.drawer_holder` /

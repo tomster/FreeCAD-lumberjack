@@ -72,6 +72,8 @@ DRAWER_A = {
     "t_side": "12 mm", "t_bottom": "8 mm", "bottom_v_offset": "0 mm",
     "width_front": "440 mm", "height_front": "160 mm", "t_front": "18 mm",
     "front_v_offset": "20 mm", "corner_joint": 0, "has_front": True,
+    "handle_slot": True, "handle_diameter": "32 mm", "handle_width": "100 mm",
+    "handle_v_offset": "20 mm",
 }
 DRAWER_C = {  # captured bottom (t_bottom == t_side), no drawer front
     "width": "300 mm", "height": "100 mm", "depth": "400 mm",
@@ -79,6 +81,9 @@ DRAWER_C = {  # captured bottom (t_bottom == t_side), no drawer front
     "width_front": "340 mm", "height_front": "140 mm", "t_front": "18 mm",
     "front_v_offset": "20 mm", "corner_joint": 0, "has_front": False,
 }
+
+
+import math
 
 
 def test_geometry(cam, nesting):
@@ -100,6 +105,19 @@ def test_geometry(cam, nesting):
         raise AssertionError("ToolTooWide not raised for a short stopped pocket")
     except cam.ToolTooWide:
         FreeCAD.Console.PrintMessage("  ok: short stopped pocket rejected\n")
+    # stadium 100 x 32 with a 4 mm bit: passes follow the semicircles
+    import math
+    st = cam.Region("h", -50, 50, 8, 40, 12.2, "u", shape="slot")
+    check(st.closed, "slot regions are closed")
+    ps = cam.slot_passes(st, 4.0)
+    check(len(ps) >= 15, "stadium needs many passes ({})".format(len(ps)))
+    for (u0, v), (u1, _v) in ps:
+        reach = math.sqrt(max((16 - 2) ** 2 - (v - 24) ** 2, 0))
+        check(abs(max(u0, u1) - (50 - 16 + reach)) < 1e-9 and abs(min(u0, u1) + (50 - 16 + reach)) < 1e-9,
+              "pass at v={:.2f} ends on the inset arc".format(v))
+    vs = sorted(v for (_u0, v), _ in ps)
+    check(abs(vs[0] - 10) < 1e-9 and abs(vs[-1] - 38) < 1e-9, "outer passes a tool radius inside the slot")
+    check(abs(sorted(abs(u1 - u0) for (u0, _), (u1, _) in ps)[0] - 68) < 1e-9, "outermost pass covers the straight part only")
 
     # nesting: the standard drawer's 12 mm panels on a 630 x 1080 sheet with a 6 mm bit
     items = [nesting.Item(k, l, w, 12) for k, l, w in
@@ -185,6 +203,36 @@ def main():
     doc.recompute()
     check(abs(bot.Shape.Volume - 388.0 * 476.0 * 8.0) < 1e-3, "back to inserted after resetting")
 
+    # --- handle slots in the sides ----------------------------------------------------
+    import Part
+    for role in ("SideL", "SideR"):
+        side = bodies[role]
+        sbb = side.Shape.BoundBox
+        # through the thickness at the slot centre (z = 120 - 20 - 16), solid just above the slot
+        probe = Part.makeBox(sbb.XLength, 2, 2, FreeCAD.Vector(sbb.XMin, -1, 83))
+        check(side.Shape.common(probe).Volume < 1e-9, "{}: handle slot goes through".format(role))
+        probe = Part.makeBox(sbb.XLength, 2, 2, FreeCAD.Vector(sbb.XMin, -1, 101))
+        check(abs(side.Shape.common(probe).Volume - sbb.XLength * 4) < 1e-6, "{}: material above the slot (top edge at 100)".format(role))
+        probe = Part.makeBox(sbb.XLength, 2, 2, FreeCAD.Vector(sbb.XMin, -1, 66))
+        check(abs(side.Shape.common(probe).Volume - sbb.XLength * 4) < 1e-6, "{}: material below the slot (bottom edge at 68)".format(role))
+        probe = Part.makeBox(sbb.XLength, 2, 2, FreeCAD.Vector(sbb.XMin, 50.5, 83))
+        check(abs(side.Shape.common(probe).Volume - sbb.XLength * 4) < 1e-6, "{}: solid beyond the slot end at 50".format(role))
+        probe = Part.makeBox(sbb.XLength, 2, 2, FreeCAD.Vector(sbb.XMin, 46, 83))
+        check(side.Shape.common(probe).Volume < 1e-9, "{}: semicircle end reaches past 48".format(role))
+    v_on = bodies["SideL"].Shape.Volume
+    holder.handle_slot = False
+    doc.recompute()
+    slot_area = 68.0 * 32.0 + math.pi * 16.0 ** 2
+    check(abs(bodies["SideL"].Shape.Volume - v_on - slot_area * 12.0) < 1e-3, "handle slot removes a 100 x 32 stadium x t_side")
+    holder.handle_slot = True
+    doc.recompute()
+    check(abs(bodies["SideL"].Shape.Volume - v_on) < 1e-6, "handle slot back on")
+    ok_v, msg_v = drawers._validate_values(dict(DRAWER_A, handle_width="600 mm"))
+    check(not ok_v and "depth" in msg_v, "handle slot wider than the depth is rejected")
+    ok_v, msg_v = drawers._validate_values(dict(DRAWER_A, handle_v_offset="80 mm"))
+    check(not ok_v and "groove" in msg_v, "handle slot reaching the bottom groove is rejected")
+    check(drawers._validate_values(DRAWER_A)[0], "default handle slot validates")
+
     bit = pick_bit(cam)
     d = bit.diameter
     FreeCAD.Console.PrintMessage("  using bit {} (d={})\n".format(bit.label, d))
@@ -268,7 +316,8 @@ def main():
     legacy = doc.addObject("App::Part", "Legacy")
     lh = doc.addObject("App::FeaturePython", "Legacy_Params")
     legacy.addObject(lh)
-    for prop in drawers._HOLDER_LENGTH_PROPS:
+    for prop in ("width", "height", "depth", "t_side", "t_bottom", "bottom_v_offset",
+                 "width_front", "height_front", "t_front", "front_v_offset"):
         lh.addProperty("App::PropertyLength", prop)
         setattr(lh, prop, DRAWER_C[prop])
     lh.addProperty("App::PropertyBool", "overlap_box")
@@ -278,6 +327,9 @@ def main():
     check(drawers.drawer_holder(legacy) == lh, "legacy holder detected")
     check(drawers.read_drawer_values(lh)["corner_joint"] == drawers.JOINT_OVERLAP, "legacy overlap_box=True reads as Overlap")
     check(cam.DrawerParams(lh).overlap_box and not cam.DrawerParams(lh).recessed, "DrawerParams reads the legacy holder")
+    lv = drawers.read_drawer_values(lh)
+    check(lv["handle_slot"] is False and lv["handle_diameter"] == "32 mm", "legacy holder: handle slot off, defaults for the missing lengths")
+    check(not cam.DrawerParams(lh).handle_slot, "DrawerParams: legacy holder has no handle slot")
     lh.overlap_box = False
     check(drawers.read_drawer_values(lh)["corner_joint"] == drawers.JOINT_TONGUE_DADO, "legacy overlap_box=False reads as tongue and dado")
     drawers.delete_drawer(legacy)
@@ -407,6 +459,20 @@ def main():
         lo, hi = (sbb.YMin, sbb.YMax) if placed_side.rotated else (sbb.XMin, sbb.XMax)
         check(abs(ends[0] - lo - (6 + d / 2)) < 1e-6 and abs(hi - ends[1] - (6 + d / 2)) < 1e-6,
               "SideL groove pass stops {:.1f} inside each end".format(6 + d / 2))
+    handles = [o for o in ops if o.Label.startswith("Drawer_SideL_Handle")]
+    check(len(handles) >= 15 and all(abs(o.FinalDepth.Value + 12.2) < 1e-6 for o in handles), "SideL handle slot: through passes ({})".format(len(handles)))
+    hx = [c for o in handles for c in (o.CustomPoint1, o.CustomPoint2)]
+    if placed_side.rotated:
+        span = max(c.y for c in hx) - min(c.y for c in hx)
+        across = max(c.x for c in hx) - min(c.x for c in hx)
+    else:
+        span = max(c.x for c in hx) - min(c.x for c in hx)
+        across = max(c.y for c in hx) - min(c.y for c in hx)
+    hreg = [r for r in cam.pocket_regions("SideL", params, cam.panel_frame("SideL", params)) if r.name == "Handle"][0]
+    hus = [c[0] for pp in cam.slot_passes(hreg, d) for c in pp]
+    check(abs(span - (max(hus) - min(hus))) < 1e-6 and abs(across - (32 - d)) < 1e-6 and span <= 100 - d + 1e-9,
+          "handle passes on the sheet match the frame passes ({:.2f} x {:.2f}, tool {:g})".format(span, across, d))
+    check(not [o for o in ops if o.Label.startswith("Captured_SideL_Handle")], "drawer without handle slots has no handle passes")
     check([o for o in ops if o.Label.startswith("Captured_Bottom_Rabbet")], "captured bottom has rabbet passes")
     check(not [o for o in ops if o.Label.startswith("Drawer_Bottom_Rabbet")], "inserted bottom has none")
     for prefix in ("Captured_", "Drawer_"):
