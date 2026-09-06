@@ -260,14 +260,21 @@ def panel_frame(role, p):
 
 
 class Region:
-    """A rectangular pocket in the panel frame, machined with parallel slot passes."""
+    """
+    A rectangular pocket in the panel frame, machined with parallel slot passes.
 
-    def __init__(self, name, u0, u1, v0, v1, depth, along):
+    Open-ended regions (the default) reach a panel edge along the pass direction and the
+    passes overshoot them; a closed region is a stopped pocket whose passes end with the
+    tool's round end tangent to the region boundary.
+    """
+
+    def __init__(self, name, u0, u1, v0, v1, depth, along, closed=False):
         self.name = name
         self.u0, self.u1 = min(u0, u1), max(u0, u1)
         self.v0, self.v1 = min(v0, v1), max(v0, v1)
         self.depth = depth
         self.along = along  # "u" or "v": direction of the passes
+        self.closed = closed
 
     @property
     def width_across(self):
@@ -283,9 +290,15 @@ def pocket_regions(role, p, frame):
         g0 = -W / 2.0 + p.groove_offset
         g1 = g0 + p.groove_width
         # The back's groove is open to the panel's lower edge (the bottom slides in from
-        # the back), the other three walls keep it closed.
-        regions.append(Region("Groove", -L / 2.0, L / 2.0,
-                              -W / 2.0 if role == "Back" else g0, g1, ts / 2.0, "u"))
+        # the back), the other three walls keep it closed. With tongue-and-dado corners
+        # the sides' groove is stopped ts/2 short of each end so it does not show on the
+        # end grain; it ends inside the corner dados, so the slot's round end (bit <= ts/2)
+        # never leaves the dado void and the bottom's square corners still seat.
+        stopped = p.dadoed and role in ("SideL", "SideR")
+        gu = L / 2.0 - (ts / 2.0 if stopped else 0.0)
+        regions.append(Region("Groove", -gu, gu,
+                              -W / 2.0 if role == "Back" else g0, g1, ts / 2.0, "u",
+                              closed=stopped))
         if not p.overlap_box:
             # SideR's and Back's panel-frame U points against the drawer axis, so the
             # names follow the flipped end (they match the pocket names in drawers.py).
@@ -322,7 +335,8 @@ def slot_passes(region, tool_d):
     Parallel center-line passes covering a region.
 
     Returns a list of ((u, v), (u, v)) start/end pairs in the panel frame. Passes overshoot
-    both ends (all regions are open-ended). Raises ToolTooWide if the tool does not fit.
+    both ends of an open-ended region; for a closed (stopped) region they stop with the
+    tool's round end tangent to the boundary. Raises ToolTooWide if the tool does not fit.
     """
     if region.along == "u":
         a0, a1, b0, b1 = region.u0, region.u1, region.v0, region.v1
@@ -334,13 +348,19 @@ def slot_passes(region, tool_d):
         raise ToolTooWide(
             "{}: pocket is {:.2f} mm wide, tool is {:.2f} mm".format(region.name, w, tool_d)
         )
+    if region.closed and a1 - a0 < tool_d - eps:
+        raise ToolTooWide(
+            "{}: stopped pocket is {:.2f} mm long, tool is {:.2f} mm".format(
+                region.name, a1 - a0, tool_d
+            )
+        )
     if w <= tool_d + eps:
         centers = [(b0 + b1) / 2.0]
     else:
         n = int(math.ceil((w - tool_d) / (PASS_OVERLAP * tool_d))) + 1
         step = (w - tool_d) / (n - 1)
         centers = [b0 + tool_d / 2.0 + i * step for i in range(n)]
-    ext = tool_d / 2.0 + PASS_EXTENSION_EXTRA
+    ext = -tool_d / 2.0 if region.closed else tool_d / 2.0 + PASS_EXTENSION_EXTRA
     passes = []
     for i, c in enumerate(centers):
         start, end = a0 - ext, a1 + ext

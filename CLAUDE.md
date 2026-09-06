@@ -68,7 +68,10 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   manual-cut warning instead). It is modelled in the bodies *and* re-derived in `cam.py`
   (`DrawerParams`, `pocket_regions`); change both in lock-step — `test_cam.check_panels`
   pins them together (panel bbox vs. `panel_frame`, plus a pairwise no-interpenetration
-  check). The expression language has no `||`/`&&`; use nested ternaries.
+  check). The expression language has no `||`/`&&`; use nested ternaries. With the
+  tongue-and-dado variants the sides' bottom groove is a *stopped* pocket (`_cut_pocket`
+  `length_expr`, `cam.Region(closed=True)` — passes end a tool radius inside instead of
+  overshooting).
 - Drawer detection is by structure (holder with `width`, `t_side`, `t_bottom` and
   `corner_joint` — or the legacy `overlap_box` bool, mapped by `drawers.corner_joint_of`;
   bodies named `<Part>_<Role>`), see `drawers.drawer_holder` /

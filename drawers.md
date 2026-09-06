@@ -42,6 +42,8 @@ optionally the vertical distance can be increased using a parameter `bottom_v_of
 
 the **back**'s groove is open towards its lower edge (it runs from the bottom of the panel up to the top of the groove); the front's and the sides' grooves are closed. this fixes the assembly order: glue up the sides and the front, slide the bottom in from the back, then drop the back in. front and back are therefore not identical parts.
 
+with the tongue-and-dado corners the **sides'** groove is a **stopped dado**: it ends `0.5 * t_side` short of each end so it does not show on the sides' end grain. the bottom never reaches the side lips (it ends in the front's and back's grooves), and the side groove ends inside the corner dados, which run the full height — so the rounded end left by the CNC bit (`<= 0.5 * t_side`, required for the dado anyway) stays inside the dado void and the bottom's square corners still seat; no change to the tongues is needed. with half-lap corners the groove runs through into the side rabbet, which the front/back cover.
+
 ### box
 
 the corner joinery is selected per drawer with the `corner_joint` enumeration (live-editable on the created drawer; the list is append-only because saved drawers bake the indices into their expressions). the orientation is the same for every variant: the **sides run the full `depth`** and carry the corner pocket on their inner face at each end, the **front and back are `t_side` shorter than the `width`** and tuck into the sides. every cut sits on a panel's inner face, so each panel can be machined in a single setup.

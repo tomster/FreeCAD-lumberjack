@@ -73,7 +73,10 @@ faces of the side, front, and back panels ("captured-bottom drawer"), and the bo
 carries a matching perimeter rabbet so its upper-half tongue seats into the grooves. The
 back's groove is open towards its lower edge, the front's and the sides' are closed: glue
 up the sides and the front, slide the bottom in from the back, then drop the back in.
-(Front and Back are therefore not identical parts.)
+(Front and Back are therefore not identical parts.) With tongue-and-dado corners the sides'
+groove is a stopped dado, `0.5 * t_side` short of each end, so it does not show on the
+sides' end grain; it ends inside the corner dados, so the bit's round end never leaves the
+dado void and the bottom's square corners still seat.
 
 The corners depend on `corner_joint`. In every variant the sides run the full `depth` and
 carry the corner pocket on their inner face at each end, and the front and back tuck into
@@ -198,9 +201,10 @@ File > Export or the TechDraw toolbar print it.
 - **Slot passes** for the bottom groove of the walls, the corner joinery of the walls (the
   end dados or rabbets of the sides and, for the recessed tongue and dado, the end laps of
   the front/back; none with *Overlap*) and, for a captured bottom, its four rabbet strips.
-  Passes overlap by 50 % of the tool diameter and overshoot open ends. The outer-face laps
-  of the *flush* tongue and dado are not machined; the run summary lists them as a manual
-  cut.
+  Passes overlap by 50 % of the tool diameter and overshoot open ends; the stopped side
+  grooves of the tongue-and-dado variants end with the tool tangent to the stop. The
+  outer-face laps of the *flush* tongue and dado are not machined; the run summary lists
+  them as a manual cut.
 - **One Slot per merged cut line** (through cut, 0.2 mm into the spoilboard) with a
   **Tags** dress-up: tabs at 1/3 and 2/3 of every panel edge on that line, 10 mm wide,
   3 mm high (at most half the thickness).

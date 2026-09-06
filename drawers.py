@@ -38,6 +38,8 @@ Bottom joint (decided live by the expression t_bottom < t_side):
     the box bottom, the bottom is rabbeted to a t_bottom / 2 tongue.
   The back's groove is open to its lower edge so the bottom can be slid in from the back
   once the sides and the front are glued; the front and the sides keep a closed groove.
+  For the tongue-and-dado corners the sides' groove is also stopped t_side / 2 short of
+  each end (it ends inside the corner dados), so it does not show on the sides' end grain.
 
 Corner joinery (corner_joint enumeration, decided live by expressions on its index). The
 orientation is the same for all variants: the sides run the full depth, the front and back
@@ -509,15 +511,16 @@ def _build_slab(doc, body, role, a_expr, b_expr, t_expr):
 
 def _cut_pocket(
     doc, body, role, u0_expr, du_expr, v0_expr, dv_expr,
-    name="Groove", suppress_expr=None,
+    name="Groove", suppress_expr=None, length_expr=None,
 ):
     """
-    Cut a ThroughAll rectangular pocket into a panel body.
+    Cut a rectangular pocket into a panel body, symmetric about a datum plane.
 
-    The pocket sketch is placed on one of the body's origin datum planes (role), so the
-    pocket runs the full extent of the body along that plane's normal. (u, v) are the
-    in-plane sketch axes; name is used for the sketch/pocket object names. If
-    suppress_expr is given it drives the pocket's Suppressed property (1 = no cut).
+    The pocket sketch is placed on one of the body's origin datum planes (role) and cut
+    symmetrically along that plane's normal: ThroughAll by default, or over the total
+    length length_expr (a stopped pocket centred on the plane). (u, v) are the in-plane
+    sketch axes; name is used for the sketch/pocket object names. If suppress_expr is
+    given it drives the pocket's Suppressed property (1 = no cut).
     """
     sketch = doc.addObject("Sketcher::SketchObject", "{}_{}Sk".format(body.Name, name))
     body.addObject(sketch)
@@ -535,7 +538,12 @@ def _cut_pocket(
     pocket = doc.addObject("PartDesign::Pocket", "{}_{}".format(body.Name, name))
     pocket.Profile = sketch
     body.addObject(pocket)
-    pocket.Type = "ThroughAll"
+    if length_expr is None:
+        pocket.Type = "ThroughAll"
+    else:
+        pocket.Type = "Length"
+        pocket.Length = 10
+        pocket.setExpression("Length", length_expr)
     pocket.SideType = "Symmetric"
     if suppress_expr:
         pocket.setExpression("Suppressed", suppress_expr)
@@ -665,6 +673,15 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     # keep the closed groove.
     open_groove_v0 = "-{h} / 2".format(h=H("height"))
     open_groove_dv = "2 * ({gd}) + {off}".format(gd=groove_dv, off=H("bottom_v_offset"))
+    # The sides' groove is stopped t_side/2 short of each end for the tongue-and-dado
+    # variants, so it does not show on the side's end grain: the bottom never reaches the
+    # side lips, the groove ends inside the corner dados (which cover the full height), and
+    # with a bit <= t_side/2 (required for the dado anyway) the rounded end of the CAM slot
+    # stays inside the dado as well. Otherwise the groove runs through (a length past the
+    # depth is the same as ThroughAll).
+    side_groove_len = "{r} ? {d} - {ts} : ({f} ? {d} - {ts} : {d} + 2 mm)".format(
+        r=recessed, f=flush_td, d=H("depth"), ts=H("t_side")
+    )
 
     half_w = "{w} / 2 - {ts} / 2".format(w=H("width"), ts=H("t_side"))
     half_d = "{d} / 2 - ({r} ? {ts} : {ts} / 2)".format(
@@ -690,6 +707,7 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     _cut_pocket(
         doc, side_l, "XZ_Plane",
         u0_expr="0", du_expr=groove_depth, v0_expr=groove_v0, dv_expr=groove_dv,
+        length_expr=side_groove_len,
     )
     for pocket_name, v0 in (("CornerFront", corner_front_v0), ("CornerBack", corner_back_v0)):
         _cut_pocket(
@@ -706,6 +724,7 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
         doc, side_r, "XZ_Plane",
         u0_expr="-({})".format(groove_depth), du_expr=groove_depth,
         v0_expr=groove_v0, dv_expr=groove_dv,
+        length_expr=side_groove_len,
     )
     for pocket_name, v0 in (("CornerFront", corner_front_v0), ("CornerBack", corner_back_v0)):
         _cut_pocket(

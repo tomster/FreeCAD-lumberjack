@@ -90,6 +90,16 @@ def test_geometry(cam, nesting):
         raise AssertionError("ToolTooWide not raised")
     except cam.ToolTooWide:
         FreeCAD.Console.PrintMessage("  ok: ToolTooWide raised\n")
+    (p1, p2), = cam.slot_passes(r, 3.0)
+    check(p1[0] < 0 < 100 < p2[0], "open region: passes overshoot both ends")
+    rc = cam.Region("x", 0, 100, 0, 3, 1, "u", closed=True)
+    (p1, p2), = cam.slot_passes(rc, 3.0)
+    check(abs(p1[0] - 1.5) < 1e-9 and abs(p2[0] - 98.5) < 1e-9, "closed region: passes stop a tool radius inside")
+    try:
+        cam.slot_passes(cam.Region("x", 0, 2, 0, 3, 1, "u", closed=True), 3.0)
+        raise AssertionError("ToolTooWide not raised for a short stopped pocket")
+    except cam.ToolTooWide:
+        FreeCAD.Console.PrintMessage("  ok: short stopped pocket rejected\n")
 
     # nesting: the standard drawer's 12 mm panels on a 630 x 1080 sheet with a 6 mm bit
     items = [nesting.Item(k, l, w, 12) for k, l, w in
@@ -214,6 +224,10 @@ def main():
     doc.recompute()
     check(cam.DrawerParams(holder_c).corner_joint == drawers.JOINT_HALF_LAP, "half-lap read back")
     check_panels(cam, drawers, part_c, holder_c)
+    sbb = bodies_c["SideL"].Shape.BoundBox
+    check(abs(bodies_c["SideL"].Shape.BoundBox.YLength - 400.0) < 1e-6 and not [
+        r for r in cam.pocket_regions("SideL", cam.DrawerParams(holder_c), cam.panel_frame("SideL", cam.DrawerParams(holder_c))) if r.closed],
+        "half-lap: side groove runs through (ends inside the rabbet)")
     fb = bodies_c["Front"].Shape.BoundBox
     sb = bodies_c["SideL"].Shape.BoundBox
     check(abs(fb.YMax - sb.YMax) < 1e-6 and abs(fb.XLength - 288.0) < 1e-6, "half-lap: front flush with the side ends, t_side shorter")
@@ -226,11 +240,17 @@ def main():
     holder_c.corner_joint = "Tongue and dado (flush)"
     doc.recompute()
     check_panels(cam, drawers, part_c, holder_c)
+    # Stopped side groove: the lip (last 6 mm of depth) is solid over the groove band.
+    import Part
+    sbb = bodies_c["SideL"].Shape.BoundBox
+    lip = Part.makeBox(6, 6, 100, FreeCAD.Vector(sbb.XMax - 6, sbb.YMax - 6, 0))
+    check(abs(bodies_c["SideL"].Shape.common(lip).Volume - 6 * 6 * 100) < 1e-6, "flush T&D: side groove stopped, lip is solid")
+    mid = Part.makeBox(6, 6, 100, FreeCAD.Vector(sbb.XMax - 6, -3, 0))
+    check(bodies_c["SideL"].Shape.common(mid).Volume < 6 * 6 * 100 - 1.0, "flush T&D: groove present mid-panel")
     fb = bodies_c["Front"].Shape.BoundBox
     check(abs(fb.YMax - sb.YMax) < 1e-6 and abs(fb.XLength - 288.0) < 1e-6, "flush T&D: front flush with the side ends, t_side shorter")
     check(abs(bodies_c["Bottom"].Shape.BoundBox.YLength - 388.0) < 1e-6, "flush T&D: bottom is depth - t_side long")
     # The lap is on the outer face: the outer end corner is void, the inner one (tongue) solid.
-    import Part
     outer = Part.makeBox(6, 6, 100, FreeCAD.Vector(fb.XMax - 6, fb.YMax - 6, 0))
     inner = Part.makeBox(6, 6, 100, FreeCAD.Vector(fb.XMax - 6, fb.YMin, 0))
     front_shape = bodies_c["Front"].Shape
@@ -382,6 +402,11 @@ def main():
             dist = g.CustomPoint1.y - sbb.YMin
             check(8 + d / 2 - 1e-6 <= dist <= 16 - d / 2 + 1e-6, "groove band 8..16 above the bottom edge ({:.2f})".format(dist))
         check(abs(g.FinalDepth.Value + 6) < 1e-6, "groove depth 6")
+        # recessed T&D: stopped groove, the pass ends 6 mm (lip) + tool radius inside the panel ends
+        ends = sorted([g.CustomPoint1.y, g.CustomPoint2.y] if placed_side.rotated else [g.CustomPoint1.x, g.CustomPoint2.x])
+        lo, hi = (sbb.YMin, sbb.YMax) if placed_side.rotated else (sbb.XMin, sbb.XMax)
+        check(abs(ends[0] - lo - (6 + d / 2)) < 1e-6 and abs(hi - ends[1] - (6 + d / 2)) < 1e-6,
+              "SideL groove pass stops {:.1f} inside each end".format(6 + d / 2))
     check([o for o in ops if o.Label.startswith("Captured_Bottom_Rabbet")], "captured bottom has rabbet passes")
     check(not [o for o in ops if o.Label.startswith("Drawer_Bottom_Rabbet")], "inserted bottom has none")
     for prefix in ("Captured_", "Drawer_"):
@@ -411,6 +436,8 @@ def main():
     params_f = cam.DrawerParams(holder_c)
     check(not [r for r in cam.pocket_regions("Front", params_f, cam.panel_frame("Front", params_f)) if r.name.startswith("Lap")], "flush T&D: outer-face laps are not machined")
     check([r for r in cam.pocket_regions("SideL", params_f, cam.panel_frame("SideL", params_f)) if r.name.startswith("Corner") and abs(r.u1 - r.u0 - 6.0) < 1e-9], "flush T&D: sides keep the 6 mm dado")
+    groove_f = [r for r in cam.pocket_regions("SideL", params_f, cam.panel_frame("SideL", params_f)) if r.name == "Groove"][0]
+    check(groove_f.closed and abs(groove_f.u1 - (400.0 / 2 - 6.0)) < 1e-9, "flush T&D: CAM groove stopped 6 mm short of the side ends")
     problems_f, warn_f = cam.validate_drawer(part_c, params_f, s)
     check(not problems_f and any("OUTER face" in w and "by hand" in w for w in warn_f), "flush T&D: manual lap reported as a warning: {}".format(warn_f))
     holder_c.corner_joint = "Tongue and dado (recessed)"
