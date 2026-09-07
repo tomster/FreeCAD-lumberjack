@@ -19,9 +19,9 @@ Workflow
    the operator) or bottom-left (Y positive). Panels hug the two edges at that corner.
    Operations: Slot passes for the bottom groove, the corner joinery and the bottom's
    perimeter rabbet; one Slot per merged cut line with a Tags dress-up. Finger-jointed
-   drawers additionally get a "sides" and a "fronts" finger Job per height (see Geometry).
+   drawers additionally get one finger Job per height (see Geometry).
    Finally each Job is post-processed to <docdir>/<Doc>_<group>_<t>mm_<n>.nc
-   (<Doc>_<group>_fingers_<h>mm_<sides|fronts>.nc for the finger Jobs).
+   (<Doc>_<group>_fingers_<h>mm.nc for the finger Jobs).
 4. Running the command again re-nests and replaces the Jobs of the selected drawers.
 
 Geometry
@@ -44,12 +44,14 @@ a corner pocket on their inner face at each end; the front and back tuck into th
   finger joint: full-size walls like mitered; the fingers are NOT machined on the sheet
       (the walls are nested as plain rectangles, every wall's groove stopped t_side/2 short
       of the ends with the bit's round end running on into the fingers). Instead each run
-      adds one pair of *finger Jobs* per (height, t_side, tolerance): "sides" (SideL/SideR
-      of every finger-jointed drawer) and "fronts" (Front/Back). The panels stand on end,
-      stacked face to face along +Y from Y = 0, bottom (grooved) edges at X = 0, the end
-      face at Z = 0 (lower-left origin, no orientation options); every slot is a set of Slot
-      passes across the whole stack, FINGER_OVERSHOOT + tool radius past both stack faces
-      into sacrificial boards, t_side deep. Each finger Job is run once per panel end.
+      adds one *finger Job* per (height, t_side, tolerance) holding all four walls of every
+      finger-jointed drawer of that group in one pack. The panels stand on end, stacked face
+      to face along +Y from Y = 0, the end face at Z = 0 (lower-left origin, no orientation
+      options); the sides with their bottom (grooved) edge at X = 0, the fronts and backs
+      UPSIDE DOWN (grooved edge at X = height) -- the finger count is even, so a flipped
+      front shows the sides' slot pattern. Every slot is a set of Slot passes across the
+      whole stack, FINGER_OVERSHOOT + tool radius past both stack faces into sacrificial
+      boards, t_side deep. The finger Job is run once per panel end.
 Optional handle slots (handle_slot) are through stadiums in the sides, cut as a Profile op
 on the slot's top edges of the model clone (inside, tool-compensated) with a Tags dress-up
 holding the waste piece by one tab on each straight segment.
@@ -387,19 +389,19 @@ def handle_outline(role, p, frame):
     return (-p.handle_width / 2.0, p.handle_width / 2.0, top - p.handle_diameter, top)
 
 
-def finger_regions(p, kind, stack):
+def finger_regions(p, stack):
     """
     Finger-slot regions of a finger Job in job coordinates: u = X along the panel height
-    from the bottom edge, v = Y through the stack (0..stack), passes along v overshooting
-    FINGER_OVERSHOOT past both stack faces, t_side deep. kind is "sides" or "fronts".
-    Region names carry the finger position counted from the bottom edge.
+    (the sides' bottom edge at X = 0; fronts/backs stand upside down and share the pattern),
+    v = Y through the stack (0..stack), passes along v overshooting FINGER_OVERSHOOT past
+    both stack faces, t_side deep. Region names carry the (odd) finger position counted
+    from X = 0.
     """
-    n, pitch, side_slots, fb_slots = _drawers.finger_layout(p.height, p.t_side, p.finger_tolerance)
-    first, bands = (1, side_slots) if kind == "sides" else (0, fb_slots)
+    _n, _pitch, side_slots, _fb = _drawers.finger_layout(p.height, p.t_side, p.finger_tolerance)
     return [
-        Region("Slot{}".format(first + 2 * j), v0, v1, 0.0, stack, p.t_side, "v",
+        Region("Slot{}".format(1 + 2 * j), v0, v1, 0.0, stack, p.t_side, "v",
                overshoot=FINGER_OVERSHOOT)
-        for j, (v0, v1) in enumerate(bands)
+        for j, (v0, v1) in enumerate(side_slots)
     ]
 
 
@@ -504,12 +506,11 @@ def validate_drawer(part, params, settings):
                 "{}: finger joint - the {:.2f} mm bit must be thinner than the {:g} mm side "
                 "thickness (lip of the stopped bottom groove)".format(label, d, ts)
             )
-        for kind in ("sides", "fronts"):
-            for region in finger_regions(params, kind, ts):
-                try:
-                    slot_passes(region, d)
-                except ToolTooWide as e:
-                    problems.append("{} finger {}: {}".format(label, kind, e))
+        for region in finger_regions(params, ts):
+            try:
+                slot_passes(region, d)
+            except ToolTooWide as e:
+                problems.append("{} finger joint: {}".format(label, e))
         ceh = settings.cutting_edge_height
         if ceh is not None and ceh < ts:
             warnings.append(
@@ -1243,10 +1244,11 @@ def _place_clone(doc, clone, frame, placed, origin):
     doc.recompute()
 
 
-def _place_finger_clone(doc, clone, frame, y0):
+def _place_finger_clone(doc, clone, frame, y0, upside_down=False):
     """
-    Stand a wall clone on end for a finger Job: panel height along +X (bottom edge at
-    X = 0), thickness along Y (face at Y = y0), length along -Z (machined end face at Z = 0).
+    Stand a wall clone on end for a finger Job: panel height along X (bottom edge at X = 0,
+    or the top edge when upside_down), thickness along Y (face at Y = y0), length along Z
+    with the machined end face at Z = 0.
     """
     V, N, U = frame.V, frame.N, frame.U
     m = FreeCAD.Matrix(
@@ -1255,7 +1257,10 @@ def _place_finger_clone(doc, clone, frame, y0):
         -U.x, -U.y, -U.z, 0,
         0, 0, 0, 1,
     )
-    clone.Placement = FreeCAD.Placement(Vector(0, 0, 0), FreeCAD.Rotation(m))
+    rot = FreeCAD.Rotation(m)
+    if upside_down:  # half a turn about the stack normal: X -> -X, Z -> -Z
+        rot = FreeCAD.Rotation(Vector(0, 1, 0), 180).multiply(rot)
+    clone.Placement = FreeCAD.Placement(Vector(0, 0, 0), rot)
     doc.recompute()
     bb = clone.Shape.BoundBox
     pl = clone.Placement
@@ -1473,21 +1478,20 @@ def finger_groups(drawers):
     return [(key, groups[key]) for key in sorted(groups)]
 
 
-FINGER_KINDS = ("sides", "fronts")
-FINGER_ROLES = {"sides": ("SideL", "SideR"), "fronts": ("Front", "Back")}
+FINGER_ROLES = ("SideL", "SideR", "Front", "Back")
+FINGER_FLIPPED_ROLES = ("Front", "Back")  # stand upside down in the pack
 
 
 class FingerJobResult:
-    """Result of one finger Job (a stack of same-height walls, one slot pattern)."""
+    """Result of one finger Job (a pack of same-height walls, one slot pattern)."""
 
     sheet = None  # tells the summary and callers apart from a SheetJobResult
     cut_slots = 0
     disabled_tabs = ()
     page = None
 
-    def __init__(self, job, kind, height, t_side, panels):
+    def __init__(self, job, height, t_side, panels):
         self.job = job
-        self.kind = kind
         self.height = height
         self.t_side = t_side
         self.thickness = t_side
@@ -1507,25 +1511,26 @@ class FingerJobResult:
         return sorted({r.part.Label for r in self.panels})
 
 
-def build_finger_job(doc, key, group, kind, settings, out_dir, container, x_offset=0.0):
+def build_finger_job(doc, key, group, settings, out_dir, container, x_offset=0.0):
     """
-    Create the finger Job of one kind ("sides" or "fronts") for a finger group.
+    Create the finger Job of a finger group: all four walls of its drawers in one pack.
 
-    The wall clones stand on end in a stack along +Y (see _place_finger_clone), the stock
-    is the stack's envelope, and every finger slot is a set of Slot passes across the stack
-    (FINGER_OVERSHOOT + tool radius past both faces, t_side deep) - no tabs. The user runs the
-    Job once per panel end, keeping the bottom edges at X = 0.
+    The wall clones stand on end in a stack along +Y (see _place_finger_clone), the sides
+    with their bottom edge at X = 0 and the fronts/backs upside down (the even finger count
+    makes their pattern the sides' mirror image). The stock is the stack's envelope, and
+    every finger slot is a set of Slot passes across the stack (FINGER_OVERSHOOT + tool
+    radius past both faces, t_side deep) - no tabs. The user runs the Job once per panel end.
     """
     height, t, _tol = key
     panels = []
     for part, holder, params in group:
         bodies = dict(drawer_panels(part))
-        for role in FINGER_ROLES[kind]:
+        for role in FINGER_ROLES:
             body = bodies.get(role)
             if body is not None:
                 panels.append(PanelRef(part, holder, params, role, body, panel_frame(role, params)))
     drawer_names = sorted({r.part.Name for r in panels})
-    label = "Fingers {} {:g}mm".format(kind, height)
+    label = "Fingers {:g}mm".format(height)
     if set(drawer_names) != set(container.LumberjackDrawers):
         label += " ({})".format(", ".join(sorted({r.part.Label for r in panels})))
     frame_obj = _create_sheet_frame(doc, container, label, x_offset)
@@ -1534,17 +1539,16 @@ def build_finger_job(doc, key, group, kind, settings, out_dir, container, x_offs
     job.LumberjackThickness = float(t)
     job.LumberjackSheet = 0
     job.addProperty(
-        "App::PropertyString", "LumberjackFingers", "Lumberjack",
-        "Finger Job: the walls standing in its stack (sides or fronts)",
+        "App::PropertyBool", "LumberjackFingers", "Lumberjack",
+        "Finger Job: walls standing on end in a pack, slots cut into the end grain",
     )
-    job.LumberjackFingers = kind
+    job.LumberjackFingers = True
     group_slug = _sanitize(re.sub(r"^CAM\s+", "", container.Label))
     out_path = os.path.join(
-        out_dir,
-        "{}_{}_fingers_{:g}mm_{}.nc".format(_sanitize(doc.Label), group_slug, height, kind),
+        out_dir, "{}_{}_fingers_{:g}mm.nc".format(_sanitize(doc.Label), group_slug, height)
     )
     _configure_job(job, settings, out_path)
-    result = FingerJobResult(job, kind, height, t, panels)
+    result = FingerJobResult(job, height, t, panels)
     result.container = container
     result.frame = frame_obj
 
@@ -1554,7 +1558,9 @@ def build_finger_job(doc, key, group, kind, settings, out_dir, container, x_offs
         if src is None or src.Name not in by_body:
             continue
         i = by_body[src.Name]
-        _place_finger_clone(doc, clone, panels[i].frame, i * t)
+        _place_finger_clone(
+            doc, clone, panels[i].frame, i * t, upside_down=panels[i].role in FINGER_FLIPPED_ROLES
+        )
 
     tc = _setup_tool(job, doc, settings)
     max_len = max(r.frame.L for r in panels)
@@ -1562,12 +1568,12 @@ def build_finger_job(doc, key, group, kind, settings, out_dir, container, x_offs
     _set_stock_box(job, doc, Vector(height, stack, max_len), Vector(0, 0, -max_len))
 
     params = panels[0].params
-    result.regions = finger_regions(params, kind, stack)
+    result.regions = finger_regions(params, stack)
     for region in result.regions:
         for k, ((u0, v0), (u1, v1)) in enumerate(slot_passes(region, settings.tool_d)):
             _make_slot(
                 job,
-                "Fingers_{:g}mm_{}_{}_{}".format(height, kind, region.name, k + 1),
+                "Fingers_{:g}mm_{}_{}".format(height, region.name, k + 1),
                 tc, Vector(u0, v0, 0), Vector(u1, v1, 0), 0.0, t, settings.step_down,
             )
             result.pocket_slots += 1
@@ -1671,19 +1677,17 @@ def run(drawers, settings):
     groups = finger_groups(drawers)
     if len(groups) > 1:
         warnings.append(
-            "finger-jointed drawers of {} different heights/thicknesses: one pair of finger "
-            "Jobs per group ({})".format(
+            "finger-jointed drawers of {} different heights/thicknesses: one finger Job "
+            "(pack) per group ({})".format(
                 len(groups), ", ".join("{:g} mm".format(k[0]) for k, _g in groups)
             )
         )
     for key, group in groups:
-        for kind in FINGER_KINDS:
-            results.append(
-                build_finger_job(
-                    doc, key, group, kind, settings, out_dir, container,
-                    x_offset=len(results) * pitch,
-                )
+        results.append(
+            build_finger_job(
+                doc, key, group, settings, out_dir, container, x_offset=len(results) * pitch
             )
+        )
     doc.recompute()
     return results, problems, warnings
 
@@ -1909,16 +1913,17 @@ def summarize_results(results, warnings, origin=ORIGIN_TOP_LEFT):
         s = r.sheet
         if s is None:  # finger Job
             lines.append(
-                "{}: {} walls on end in a {:g} mm stack, {} finger slots ({} passes, {:g} mm deep), "
+                "{}: {} walls on end in one {:g} mm pack, {} finger slots ({} passes, {:g} mm deep), "
                 "run once per end{}".format(
                     r.job.Label, len(r.panels), r.stack, len(r.regions), r.pocket_slots, r.t_side,
                     ", G-code: " + ", ".join(r.gcode_files) if r.gcode_files else "",
                 )
             )
             lines.append(
-                "  clamp: bottom (grooved) edges at X = 0, end faces flush at Z = 0, faces stacked "
-                "along +Y from Y = 0; sacrificial boards flush on both outer faces (passes run "
-                "{:g} mm + tool radius past them)".format(FINGER_OVERSHOOT)
+                "  pack: faces stacked along +Y from Y = 0 (any order), end faces flush at Z = 0; "
+                "SIDES with the grooved edge at X = 0, FRONTS and BACKS upside down (grooved edge "
+                "at X = {:g}); sacrificial boards flush on both outer faces (passes run {:g} mm + "
+                "tool radius past them)".format(r.height, FINGER_OVERSHOOT)
             )
             continue
         lines.append(

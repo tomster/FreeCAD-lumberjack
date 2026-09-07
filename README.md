@@ -111,12 +111,14 @@ them:
 - **Mitered** (formerly *Overlap*): no corner pocket; the front and back run the full
   `width` so all four walls overlap — stock for corners cut by hand.
 - **Finger joint:** a box joint with square fingers, modelled in the bodies. All four walls
-  run full size. `n = max(2, round(height / t_side))` fingers of pitch `height / n` (exactly
-  `t_side` when the height is a multiple of it) at each corner, `t_side` deep. The sides carry
-  the teeth at the even positions from the bottom edge (a tooth at the bottom edge), the
-  front and back at the odd ones. The slots are one pocket per wall repeated by a
-  `LinearPattern` with an expression-driven count, so height changes stay live. The fingers
-  are not cut on the sheet; the CAM run adds separate **finger Jobs** (below).
+  run full size. An even number `n = 2 * max(1, round(height / (2 * t_side)))` of fingers of
+  pitch `height / n` (exactly `t_side` when the height is an even multiple of it; 10.5 mm for
+  84 mm / 12 mm) at each corner, `t_side` deep. The sides carry the teeth at the even
+  positions from the bottom edge (a tooth at the bottom edge), the front and back at the odd
+  ones; with an even count the two patterns are each other's upside-down image. The slots
+  are one pocket per wall repeated by a `LinearPattern` with an expression-driven count, so
+  height changes stay live. The fingers are not cut on the sheet; the CAM run adds a
+  separate **finger Job** (below).
 
 **Coordinate system:** The bottom panel is centered on the Part origin in X (width) and Y
 (depth); its bottom face is at `z = 0` (at the default `bottom_v_offset` of 0). The whole
@@ -224,18 +226,19 @@ File > Export or the TechDraw toolbar print it.
   stop, the stopped grooves of finger-jointed walls with the tool centre on the stop (the
   bottom reaches the stop; the round end runs on inside the finger). The outer-face laps of
   the *flush* tongue and dado are not machined; the run summary lists them as a manual cut.
-- **Finger Jobs** (finger-jointed drawers only): per group of drawers with the same height,
-  `t_side` and tolerance, two extra Jobs `Job Fingers sides <h>mm` (SideL/SideR of every
-  drawer of the group) and `Job Fingers fronts <h>mm` (Front/Back), each in its own frame.
-  The walls stand on end, stacked face to face along +Y from Y = 0, bottom (grooved) edges
-  at X = 0, the end face to be cut at Z = 0 — lower-left origin, no orientation options.
-  Every finger slot is a set of Slot passes across the whole stack, `t_side` deep, running
-  5 mm plus a tool radius past both outer faces into **sacrificial boards** clamped there
-  (flush with the end faces) against tear-out. Run each finger Job **once per end**, turning
-  the stack end over end so the bottom edges stay at X = 0. The bit must be thinner than
-  `t_side`. G-code: `<Document>_<container name>_fingers_<h>mm_<sides|fronts>.nc`. No
-  TechDraw page yet. Selecting several finger-jointed drawers of different heights gives one
-  Job pair per height (reported in the summary).
+- **Finger Job** (finger-jointed drawers only): per group of drawers with the same height,
+  `t_side` and tolerance, one extra Job `Job Fingers <h>mm` in its own frame holding **all
+  four walls** of every drawer of the group in one pack. The walls stand on end, stacked
+  face to face along +Y from Y = 0 (any order), the end face to be cut at Z = 0 — lower-left
+  origin, no orientation options. **Sides with the grooved edge at X = 0, fronts and backs
+  upside down** (grooved edge at X = `h`): the even finger count makes a flipped front show
+  the sides' slot pattern. Every finger slot is a set of Slot passes across the whole pack,
+  `t_side` deep, running 5 mm plus a tool radius past both outer faces into **sacrificial
+  boards** clamped there (flush with the end faces) against tear-out. Run the finger Job
+  **once per end**, turning the pack end over end. The bit must be thinner than `t_side`.
+  G-code: `<Document>_<container name>_fingers_<h>mm.nc`. No TechDraw page yet. Selecting
+  several finger-jointed drawers of different heights gives one Job per height (reported in
+  the summary). See **Milling the finger joints** below for the workshop procedure.
 - **Handle slots** are cut as a through **Profile** of the slot's outline (the four top
   edges of the model clone, inside, tool-compensated) with a **Tags** dress-up: one tab in
   the middle of each straight segment holds the waste piece; knock it out and clean the
@@ -245,6 +248,53 @@ File > Export or the TechDraw toolbar print it.
   3 mm high (at most half the thickness).
 - G-code at `<document folder>/<Document>_<container name>_<t>mm_<n>.nc` (also set as the
   Job output).
+
+#### Milling the finger joints: the flipped double pack
+
+The fingers are cut in a separate setup after the sheet Jobs have produced the walls. The
+finger Job is one G-code file per height, and it is run **twice on the same pack** — once
+for each end of the panels. The pack holds *all* walls of the group: for two drawers of the
+same height that is eight panels (four sides, two fronts, two backs), so the passes run
+through a `8 x t_side` stack in one go.
+
+How it works: every wall gets the same number of finger slots, but the sides have them at
+the odd positions from the bottom edge (a tooth sits at the bottom edge) and the fronts and
+backs at the even ones. Because the finger count is always even, the front/back pattern is
+exactly the sides' pattern turned upside down — so **one** slot pattern cuts both kinds as
+long as the fronts and backs stand in the pack head over heels. No separate "male" and
+"female" Jobs, and no re-clamping between the two kinds.
+
+Building the pack (job coordinates: X along the panel height, Y through the pack, Z up, zero
+at the lower-left corner of the pack's top end face):
+
+1. Stand every wall on end so the end face to be cut is on top and flush across the pack
+   (Z = 0). The bottom ends may hang at different heights when depths and widths differ.
+2. **Sides:** bottom (grooved) edge towards X = 0, i.e. to the left.
+   **Fronts and backs: upside down** — their grooved edge points to X = `height`, to the
+   right. Quick check before clamping: looking at the pack from the side, the sides' grooves
+   are all on the left, the fronts' and backs' grooves all on the right.
+3. Stack the panels face to face along +Y starting at Y = 0; the order within the pack and
+   which face points which way do not matter (the passes go through the whole pack).
+4. Clamp a **sacrificial board** flat against each outer face of the pack, flush with the
+   top end faces (not proud — the passes start at Z = 0 and would otherwise plunge into it).
+   The passes overshoot both faces by 5 mm plus a tool radius, so the tear-out happens
+   there.
+5. Zero X and Y on the lower-left corner of the pack's top end face (the sides' bottom
+   edge, first panel face) and Z on that face. Run the Job.
+6. Turn the **whole pack end over end** so the other end faces up — tip it over sideways,
+   about the axis that runs along the panel heights (X). Every panel keeps its edges where
+   they were: the sides' grooves stay left, the fronts' and backs' grooves stay right (only
+   the face order in the stack reverses, which does not matter). Turning the pack about
+   either of the other two axes (through the stack, or vertical) would swap left and right
+   and mirror the pattern — if the grooves changed sides, turn it back. Re-zero Z on the new
+   top face (X/Y are unchanged if the pack sits in the same jig) and run the same Job again.
+
+Both ends of every wall now carry the pattern, and a side mates with a front or back at any
+corner. The pitch is `height / n` with `n = 2 * round(height / (2 * t_side))`, so the fingers
+are only exactly `t_side` wide when the height is an even multiple of `t_side`; the slots are
+`finger_tolerance` wider on each flank than the pitch (0.05 mm by default, 0.2 mm total
+clearance per finger). The bit must be thinner than `t_side` (it also has to fit the
+`t_bottom` groove for the sheet Jobs anyway).
 
 Running the command again re-nests and **replaces** the Jobs of the selected drawers
 (and Jobs they shared with other drawers, so a container is always regenerated as a

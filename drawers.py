@@ -61,11 +61,14 @@ tuck into them.
     That lap faces down when the panel lies inner-face-up on the CNC, so CAM does not
     machine it and reports it as a manual cut instead.
   - "Finger joint" (4): box joint with square fingers. All four walls run full size (like
-    "Mitered"); n = max(2, round(height / t_side)) fingers of pitch p = height / n at each
-    corner, t_side deep, through the thickness. The sides carry the teeth at the even
-    positions counted from the bottom edge (a tooth at the bottom edge), the front and back
-    at the odd ones. Every slot is cut finger_tolerance wider on each flank (teeth thinner
-    by the same amount), so the mating clearance is 4 x finger_tolerance per finger. The
+    "Mitered"); an EVEN number n = 2 * max(1, round(height / (2 t_side))) of fingers of
+    pitch p = height / n at each corner, t_side deep, through the thickness. The sides carry
+    the teeth at the even positions counted from the bottom edge (a tooth at the bottom
+    edge), the front and back at the odd ones; with n even the two patterns are each
+    other's upside-down image, so one vertical CAM Job cuts all four walls in one pack (the
+    fronts/backs simply go in upside down). Every slot is cut finger_tolerance wider on each
+    flank (teeth thinner by the same amount), so the mating clearance is 4 x finger_tolerance
+    per finger. The
     slots are one Pocket (two rectangles, one per end) repeated by a LinearPattern along the
     height with an expression-driven occurrence count. The bottom groove is stopped t_side/2
     short of each end on all four walls and the back's groove is closed (the box is glued up
@@ -203,13 +206,19 @@ def finger_layout(height, t_side, tolerance):
     """
     Finger-joint layout for a wall height, mirroring the expressions in create_drawer.
 
-    Returns (n, pitch, side_slots, fb_slots): n fingers of pitch height / n at each corner
-    (n = max(2, round(height / t_side))) and the slot bands [(v0, v1)] measured from the
-    bottom edge, each widened by the tolerance on both flanks and clipped to the panel. The
-    sides have their slots at the odd positions (a tooth at the bottom edge), the front and
-    back at the even ones.
+    Returns (n, pitch, side_slots, fb_slots): an even number n of fingers of pitch
+    height / n at each corner (n = 2 * max(1, round(height / (2 t_side))), so the fingers
+    are as close to square as an even count allows) and the slot bands [(v0, v1)] measured
+    from the bottom edge, each widened by the tolerance on both flanks and clipped to the
+    panel. The sides have their slots at the odd positions (a tooth at the bottom edge), the
+    front and back at the even ones. Because n is even, fb_slots is side_slots mirrored
+    about mid-height: a front stood upside down shows the sides' pattern.
     """
-    n = max(2, int(round(height / float(t_side))))
+    import math
+
+    # FreeCAD's expression round() is half-away-from-zero; mirror that (not banker's).
+    pairs = max(1, int(math.floor(height / (2.0 * t_side) + 0.5)))
+    n = 2 * pairs
     pitch = height / float(n)
 
     def bands(first):
@@ -907,19 +916,20 @@ def create_drawer(name, values, container=None, placement=None, internal_name=No
     # the closed groove of the front instead of the open one.
     back_groove_v0 = "{fj} ? ({g}) : ({o})".format(fj=finger, g=groove_v0, o=open_groove_v0)
     back_groove_dv = "{fj} ? ({g}) : ({o})".format(fj=finger, g=groove_dv, o=open_groove_dv)
-    # Finger joints (see finger_layout for the same derivation in Python): n fingers of
-    # pitch p over the height, slots widened by the tolerance on each flank. The sides'
-    # slots sit at the odd positions (tooth at the bottom edge), the front's/back's at the
-    # even ones; the LinearPattern repeats the first slot every 2 p.
+    # Finger joints (see finger_layout for the same derivation in Python): an even number
+    # n of fingers of pitch p over the height, slots widened by the tolerance on each
+    # flank. The sides' slots sit at the odd positions (tooth at the bottom edge), the
+    # front's/back's at the even ones -- n even makes the two patterns each other's
+    # upside-down image (one vertical CAM Job for all walls); every wall has n / 2 slots
+    # and the LinearPattern repeats the first one every 2 p.
     tol = H("finger_tolerance")
-    finger_n = "max(2; round({h} / {ts}))".format(h=H("height"), ts=H("t_side"))
+    finger_n = "2 * max(1; round({h} / (2 * {ts})))".format(h=H("height"), ts=H("t_side"))
     finger_p = "{h} / ({n})".format(h=H("height"), n=finger_n)
     finger_dv = "({p}) + 2 * {tol}".format(p=finger_p, tol=tol)
     finger_offset = "2 * ({p})".format(p=finger_p)
     side_finger_v0 = "-{h} / 2 + ({p}) - {tol}".format(h=H("height"), p=finger_p, tol=tol)
     fb_finger_v0 = "-{h} / 2 - {tol}".format(h=H("height"), tol=tol)
-    side_finger_count = "floor(({n}) / 2)".format(n=finger_n)
-    fb_finger_count = "({n}) - floor(({n}) / 2)".format(n=finger_n)
+    side_finger_count = fb_finger_count = "({n}) / 2".format(n=finger_n)
     finger_suppress = "{fj} ? 0 : 1".format(fj=finger)
 
     half_w = "{w} / 2 - {ts} / 2".format(w=H("width"), ts=H("t_side"))

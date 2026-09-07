@@ -152,12 +152,12 @@ def main():
     res_k, problems, _ = cam.run([(kiste, kiste_holder)], s)
     check(not problems, "finger drawer run ok: {}".format(problems))
     fj = [r for r in res_k if r.sheet is None]
-    check(len(fj) == 2 and sorted(r.kind for r in fj) == ["fronts", "sides"], "two finger jobs")
+    check(len(fj) == 1 and fj[0].job.Label == "Job Fingers 96mm", "one finger job (pack)")
     for r in fj:
         check(r.job.ViewObject is not None and r.job.ViewObject.Proxy is not None, "{} has a view provider".format(r.job.Label))
         check(r.job.Operations.Group and all(op.ViewObject.Proxy is not None for op in r.job.Operations.Group), "{} ops have view providers".format(r.job.Label))
         check(not any("Invalid" in o.State for o in r.frame.Group), "{} frame valid".format(r.job.Label))
-        check(len(r.job.Model.Group) == 2 and all(abs(c.Shape.BoundBox.ZMax) < 1e-6 for c in r.job.Model.Group), "{}: two walls on end".format(r.job.Label))
+        check(len(r.job.Model.Group) == 4 and all(abs(c.Shape.BoundBox.ZMax) < 1e-6 for c in r.job.Model.Group), "{}: four walls on end".format(r.job.Label))
 
     doc.save()
 

@@ -77,19 +77,22 @@ QT_QPA_PLATFORM=offscreen ~/Applications/FreeCAD.AppImage --module-path \
   with finger joints every wall's groove is stopped and the back's is closed, and CAM uses
   `Region(closed=True, flush=True)` — passes end with the tool centre on the stop.
 - Finger joints: `drawers.finger_layout(h, t, tol)` is the single Python derivation of the
-  pattern (n, pitch, slot bands for sides/fronts) and mirrors the holder expressions; the
+  pattern (n, pitch, slot bands for sides/fronts) and mirrors the holder expressions
+  (FreeCAD's `round()` is half-away-from-zero, so the Python side uses `floor(x + 0.5)`,
+  not `round`). n is forced **even** so the fronts' pattern is the sides' upside down; the
   slots are one Pocket (two rectangles, one per end) plus a `PartDesign::LinearPattern`
   (`Mode="Spacing"`, `Offset` = 2 pitch, `Occurrences` expression — `PropertyInteger`
   rounds a double result). Gotchas (1.1.3): `Body.addObject(pattern)` does **not** advance
   the Tip to a Transformed feature — set `body.Tip = pattern` or later features skip it;
   a Transformed feature silently drops suppressed originals and then leaves its shape
   alone, so the pattern's `Suppressed` must follow its pocket's. CAM: `finger_groups` keys
-  by (height, t_side, tolerance); `build_finger_job` makes the `sides`/`fronts` Job with
-  the wall clones stood on end (`_place_finger_clone`: height → +X from 0, stack along +Y,
-  end face at Z = 0), stock = stack envelope, `finger_regions` → Slot passes with
+  by (height, t_side, tolerance); `build_finger_job` makes ONE Job per group with all four
+  walls stood on end in a pack (`_place_finger_clone`: height along X, stack along +Y, end
+  face at Z = 0; Front/Back `upside_down=True`, i.e. half a turn about Y), stock = pack
+  envelope, `finger_regions` (sides' odd slots) → Slot passes with
   `overshoot=FINGER_OVERSHOOT`, no tabs, no page. Results are `FingerJobResult`s with
   `sheet = None` (that is how `summarize_results` and the tests tell them apart). Jobs carry
-  `LumberjackFingers` = kind. Handle slots (`handle_slot` + three lengths) are a stadium sketch
+  `LumberjackFingers = True`. Handle slots (`handle_slot` + three lengths) are a stadium sketch
   (`_add_slot`, endpoint tangencies like the Sketcher slot tool) pocketed through each
   side. CAM cuts them as a `Path.Op.Profile` (Side Inside, UseComp) on the clone's four
   top-face slot edges, found by geometry in `_slot_top_edges`, plus a Tags dress-up with a
